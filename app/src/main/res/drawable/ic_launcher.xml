@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 占位图标：靛蓝底 + message-square-text（Lucide，ISC 许可）。品牌图标定稿前先用这个。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="#4C5FD5" android:pathData="M0 0h48v48H0z" />
+    <group android:translateX="12" android:translateY="12">
+        <path android:strokeColor="#FFFFFF" android:strokeWidth="1.75" android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2zM7 11h10M7 15h6M7 7h8" />
+    </group>
+</vector>

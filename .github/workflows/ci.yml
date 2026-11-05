@@ -1,0 +1,56 @@
+# 天听 Android 的 CI：代码规则（颜色字面量、SharedPreferences、日志、品牌词、token 一致性）、Android Lint、单元测试、assemble。
+# 依赖私有仓库 tianting-sdk-kotlin（composite build）：需要只读部署密钥 secret TIANTING_SDK_KOTLIN_DEPLOY_KEY，
+# 由仓库所有者运行 scripts/setup-ci-deploy-key.sh 配置。没配置时 android 这个 job 跳过，只跑不依赖 SDK 的 tokens 检查。
+# 模拟器上的 Compose UI Test 和端到端（scripts/run-tests.sh）CI 里不跑：只在本机模拟器上执行。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tokens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 主题文件外无颜色字面量（不依赖 SDK 的快速检查）
+        run: |
+          ! grep -rnE 'Color\(\s*(0x|red\s*=|[0-9])|Color\.(Red|Blue|Green|Black|White|Gray|Yellow|Cyan|Magenta)\b|parseColor\(' app/src/main/kotlin --include='*.kt' --exclude-dir=theme
+
+  android:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEY: ${{ secrets.TIANTING_SDK_KOTLIN_DEPLOY_KEY != '' }}
+    steps:
+      - name: 未配置部署密钥，跳过
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice::未配置 TIANTING_SDK_KOTLIN_DEPLOY_KEY，跳过 lint、单元测试和 assemble（运行 scripts/setup-ci-deploy-key.sh）"
+      - uses: actions/checkout@v4
+        if: env.HAS_KEY == 'true'
+        with:
+          path: tianting-android
+      - name: 检出 tianting-sdk-kotlin（只读部署密钥）
+        if: env.HAS_KEY == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: leetonny001/tianting-sdk-kotlin
+          ssh-key: ${{ secrets.TIANTING_SDK_KOTLIN_DEPLOY_KEY }}
+          path: tianting-sdk-kotlin
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        if: env.HAS_KEY == 'true'
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+        if: env.HAS_KEY == 'true'
+      - name: 代码规则、Lint、单元测试、assemble
+        if: env.HAS_KEY == 'true'
+        working-directory: tianting-android
+        env:
+          TIANTING_SDK_DIR: ${{ github.workspace }}/tianting-sdk-kotlin
+        run: ./gradlew :app:checkTianting :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:assembleDebugAndroidTest
