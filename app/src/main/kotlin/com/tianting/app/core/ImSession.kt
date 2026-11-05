@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,8 +40,21 @@ class ImSession(
     val collator: PinyinCollator?,
     private val isOnlineNow: () -> Boolean,
     private val toast: (String) -> Unit,
+    noticePrefs: NoticePrefs,
 ) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /** 系统通知（F-UI-44）。 */
+    val notices = NoticeStore(noticePrefs, self) { ms, fn ->
+        val job = scope.launch {
+            delay(ms)
+            fn()
+        }
+        Closeable { job.cancel() }
+    }
+
+    var noticeState by mutableStateOf(NoticeSnapshot())
+        private set
 
     var convs by mutableStateOf<List<Conversation>>(emptyList())
         private set
@@ -115,6 +129,10 @@ class ImSession(
         bind(c.socialLoaded) { socialLoaded = it }
         bind(c.isOfficial) { official = it }
         bind(c.fatal) { fatal = it }
+        bind(notices.state) { noticeState = it }
+        // 先订阅再连接：auth 成功时就要补拉（PRD-live C12）。
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { c.pushes.collect { notices.onPush(it) } }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { c.pushSynced.collect { notices.onSynced(it) } }
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             c.events.collect { e ->
                 when (e) {
@@ -176,6 +194,7 @@ class ImSession(
     }
 
     fun stop() {
+        notices.stop()
         network?.close()
         network = null
         scope.cancel()

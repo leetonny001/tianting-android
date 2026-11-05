@@ -186,7 +186,8 @@ class ServerE2eTest {
         waitTag("message")
         rule.waitUntil(8000) { rule.onAllNodes(hasTestTag("failed-icon") or hasTestTag("sending-icon"), useUnmergedTree = true).fetchSemanticsNodes().isEmpty() }
         until("bob 收到") { bob.conversations.value.any { it.convId == conv && it.lastMsg?.text == "你好，我是 app" } }
-        assertEquals("张三", bob.conversations.value.first { it.convId == conv }.name)
+        // 对方第一次收到时是 SDK 临时补的会话，名字是 userId，约 200ms 后 convs 刷新成昵称（refreshConversationsSoon）。
+        until("bob 看到昵称") { bob.conversations.value.first { it.convId == conv }.name == "张三" }
         runBlocking { bob.send(conv, "收到，我是 bob") }
         waitText("收到，我是 bob")
         // 对方的消息在左、自己的在右
@@ -403,4 +404,150 @@ class ServerE2eTest {
     }
 
     private val kotlinx.serialization.json.JsonPrimitive.long: Long get() = content.toLong()
+
+    // ---- 系统推送（PRD-live F-PUSH-12、PRD-ui F-UI-44）：真实 im-server、真实文件游标、真实 SharedPreferences ----
+
+    private val prefs get() = testContext.getSharedPreferences(UiPrefs.FILE, android.content.Context.MODE_PRIVATE)
+
+    private fun pushNotice(u: String, text: String, type: String = "notice"): String {
+        val id = java.util.UUID.randomUUID().toString()
+        signed("POST", "/admin/push", obj("target" to "user", "userIds" to listOf(u), "type" to type, "data" to obj("text" to text), "pushId" to id))
+        return id
+    }
+
+    /** 不退出登录，模拟进程重启：关 Activity、关连接（本地库、游标文件都留着），新建 AppModel，token 从 Keystore 读回来自动登录。 */
+    private fun restartApp() {
+        scenario?.close()
+        val old = model
+        inst.runOnMainSync { old.im?.stop() }
+        runBlocking { old.im?.client?.close() }
+        inst.runOnMainSync { testApp.model = AppModel(testContext, defaultDeps(testContext)) }
+        scenario = androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java)
+        waitTag("tab-chats", 15_000)
+        rule.waitUntil(10_000) { model.im?.state == ConnState.CONNECTED }
+    }
+
+    private fun meCount(): String? = rule.onAllNodesWithTag("me-notices-count", useUnmergedTree = true).fetchSemanticsNodes().firstOrNull()?.let { allText(it) }
+    private fun noticeTexts() = rule.onAllNodesWithTag("notice-text", useUnmergedTree = true).fetchSemanticsNodes().map { allText(it) }
+
+    private fun logcat(): String {
+        val pfd = inst.uiAutomation.executeShellCommand("logcat -d -b all")
+        return android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd).bufferedReader().use { it.readText() }
+    }
+
+    @Test fun live_notice_banner_list_and_no_token_or_data_in_logcat() { // AC-UI-44-1、AC-PUSH-01-1、AC-UI-44-2、token 和 data 不进 Logcat
+        val u = uid("n")
+        users(u)
+        appLogin(u)
+        until("第一轮补拉建立基线") { prefs.getString("ui.noticeSeen.$u", null) == "0" }
+        val secret = "ZXQ-E2E-NOTICE-" + System.currentTimeMillis().toString(36)
+        pushNotice(u, secret)
+        rule.waitUntil(3000) { has("系统通知：$secret") }
+        pushNotice(u, "ZXQ-E2E-PROMO", "promo")
+        Thread.sleep(500)
+        assertFalse(has("ZXQ-E2E-PROMO"))
+        rule.onNodeWithTag("notice-banner", useUnmergedTree = true).performClick()
+        waitTag("notices-footer")
+        assertEquals(listOf(secret), noticeTexts())
+        until("lastSeenSeq 跟上") { prefs.getString("ui.noticeSeen.$u", null) == "2" || prefs.getString("ui.noticeSeen.$u", null) == "1" }
+        val cursorFile = java.io.File(testContext.noBackupFilesDir, "tianting-push")
+        val raw = cursorFile.listFiles().orEmpty().joinToString { it.readText() }
+        assertFalse(secret in raw, "游标文件不含通知内容")
+        for ((k, v) in prefs.all) {
+            assertTrue(k.startsWith("ui."), k)
+            assertFalse(secret in v.toString())
+        }
+        val log = logcat()
+        assertFalse(secret in log, "Logcat 里有 data")
+        val token = SessionLike.tokenOf(testContext)
+        assertTrue(token.isNotEmpty())
+        assertFalse(token in log, "Logcat 里有 token")
+    }
+
+    @Test fun restart_shows_only_new_notices_and_cursor_survives_logout_and_kick() { // AC-PUSH-12-9、AC-PUSH-03-16、AC-PUSH-12-4 的原生对应、12-6
+        val u = uid("r")
+        users(u)
+        val firstOffline = "离线一-${uid("x")}"
+        pushNotice(u, firstOffline)
+        appLogin(u)
+        // 第一次使用：这一轮回放不计未查看（L-18），不弹横幅，进列表。
+        until("基线") { prefs.getString("ui.noticeSeen.$u", null) == "1" }
+        open("/me")
+        waitTag("me-notices")
+        assertEquals(null, meCount())
+        assertFalse(rule.onAllNodesWithTag("notice-banner", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty())
+        open("/me/notices")
+        waitText(firstOffline)
+        assertTrue(rule.onAllNodesWithTag("notices-footer", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty())
+
+        // 重启：游标还在，已收到的不回放；列表为空。
+        restartApp()
+        open("/me/notices")
+        waitTag("notices-empty")
+        assertEquals(emptyList(), noticeTexts())
+
+        // 重启之间到的 3 条：未查看 3，不弹横幅。
+        open("/me")
+        scenario?.close()
+        val old = model
+        inst.runOnMainSync { old.im?.stop() }
+        runBlocking { old.im?.client?.close() }
+        val texts = (1..3).map { "离线补收$it-${uid("y")}" }
+        texts.forEach { pushNotice(u, it) }
+        Thread.sleep(5) // T0 严格晚于这些推送
+        inst.runOnMainSync { testApp.model = AppModel(testContext, defaultDeps(testContext)) }
+        scenario = androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java)
+        waitTag("tab-chats", 15_000)
+        open("/me")
+        waitTag("me-notices")
+        rule.waitUntil(8000) { meCount() == "3" }
+        assertFalse(rule.onAllNodesWithTag("notice-banner", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty())
+        rule.onNodeWithTag("me-notices", useUnmergedTree = true).performClick()
+        waitTag("notices-footer")
+        assertEquals(texts.reversed(), noticeTexts())
+        until("lastSeenSeq=4") { prefs.getString("ui.noticeSeen.$u", null) == "4" }
+        open("/me")
+        waitTag("me-notices")
+        assertEquals(null, meCount())
+
+        // 真实封禁 → 被踢：ui.noticeSeen 留着，重新登录不回放。
+        signed("POST", "/admin/users/$u/ban", obj("durationSeconds" to null, "reason" to "e2e"))
+        waitTag("kicked-dialog", 8000)
+        rule.onNodeWithTag("kicked-ok", useUnmergedTree = true).performClick()
+        waitTag("login-username")
+        assertEquals("4", prefs.getString("ui.noticeSeen.$u", null))
+        signed("POST", "/admin/users/$u/unban", obj("reason" to "e2e"))
+        val during = "解封后补收-${uid("z")}"
+        pushNotice(u, during)
+        loginAgain(u)
+        open("/me")
+        waitTag("me-notices")
+        rule.waitUntil(8000) { meCount() == "1" }
+        open("/me/notices")
+        waitText(during)
+        assertEquals(listOf(during), noticeTexts(), "游标在被踢后没丢：不回放前 4 条")
+
+        // 退出登录：键删除；再登录游标还在，一条都不回放。
+        inst.runOnMainSync { model.logout() }
+        runBlocking { model.awaitTeardown() }
+        until("退出后删除") { prefs.getString("ui.noticeSeen.$u", null) == null }
+        loginAgain(u)
+        until("基线重建") { prefs.getString("ui.noticeSeen.$u", null) == "5" }
+        open("/me/notices")
+        waitTag("notices-empty")
+    }
+
+    /** 已经在登录页：换成一个新的 AppModel 不是必须的，直接再走一遍表单。 */
+    private fun loginAgain(u: String) {
+        waitTag("login-username")
+        rule.onNodeWithTag("login-username", useUnmergedTree = true).performTextReplacement(u)
+        tapUntilLeft("login-submit")
+        waitTag("tab-chats", 15_000)
+        rule.waitUntil(10_000) { model.im?.state == ConnState.CONNECTED }
+    }
+
+    /** 从 Keystore 会话存储里读当前 token，只在断言里用，不打印。 */
+    private object SessionLike {
+        fun tokenOf(c: android.content.Context): String = KeystoreSessionStore(c.applicationContext).load()?.token.orEmpty()
+    }
 }

@@ -17,6 +17,7 @@ import com.tianting.sdk.PinyinCollator
 import com.tianting.sdk.Platform
 import com.tianting.sdk.android.AndroidLocalDatabase
 import com.tianting.sdk.android.AndroidPinyin
+import com.tianting.sdk.android.AndroidPushCursorStore
 import com.tianting.sdk.android.bindNetwork
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,7 +47,7 @@ fun defaultDeps(context: Context): AppDeps {
     return AppDeps(
         newClient = { visible ->
             IMClient(
-                IMClientOptions(url = ws, platform = Platform.ANDROID, database = AndroidLocalDatabase.open(app), logger = AppLog, isVisible = visible),
+                IMClientOptions(url = ws, platform = Platform.ANDROID, database = AndroidLocalDatabase.open(app), logger = AppLog, isVisible = visible, pushCursorStore = AndroidPushCursorStore(app)),
             )
         },
         login = DemoLoginApi(base),
@@ -106,7 +107,7 @@ class AppModel(context: Context, val deps: AppDeps) {
 
     private fun begin(s: Session) {
         val client = deps.newClient { foreground }
-        val session = ImSession(client, s.userId, collator, deps.isOnline, toast::show)
+        val session = ImSession(client, s.userId, collator, deps.isOnline, toast::show, prefs)
         session.start(s.token, deps.bindNetwork)
         im = session
     }
@@ -122,9 +123,13 @@ class AppModel(context: Context, val deps: AppDeps) {
         }
     }
 
-    /** 退出登录（F-AUTH-05）：以 1000 关闭、清内存和本地库、清 token；ui.* 偏好保留。 */
-    fun logout() {
+    /**
+     * 退出登录（F-AUTH-05）：以 1000 关闭、清内存和本地库、清 token；ui.* 偏好保留，只有 ui.noticeSeen 这个账号的键删除。
+     * 被踢、凭证失效时 keepNoticeSeen=true：重新登录后不重复提醒（PRD-live F-PUSH-12 规则 5）。推送游标不在本地库，都不清（4.9 节）。
+     */
+    fun logout(keepNoticeSeen: Boolean = false) {
         val session = im ?: return
+        if (!keepNoticeSeen) session.notices.clearSeen()
         deps.sessions.clear()
         im = null
         toast.text = null

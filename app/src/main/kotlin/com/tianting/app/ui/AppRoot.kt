@@ -35,6 +35,8 @@ import com.tianting.app.ui.pages.GroupNoticePage
 import com.tianting.app.ui.pages.GroupsPage
 import com.tianting.app.ui.pages.LoginPage
 import com.tianting.app.ui.pages.MePage
+import com.tianting.app.ui.pages.NoticeBannerHost
+import com.tianting.app.ui.pages.NoticesPage
 import com.tianting.app.ui.pages.PrivacyPage
 import com.tianting.app.ui.pages.RemarkPage
 import com.tianting.app.ui.pages.RequestsPage
@@ -62,6 +64,7 @@ fun AppRoot(model: AppModel) {
                     } else {
                         CompositionLocalProvider(LocalIm provides im) {
                             Pages(model.nav)
+                            NoticeBannerHost(im, model.nav)
                             KickedDialog(im, model)
                         }
                     }
@@ -93,6 +96,7 @@ private fun Route(entry: Navigator.Entry) {
         entry.path == "/contacts/requests" -> RequestsPage()
         entry.path == "/contacts/groups" -> GroupsPage()
         entry.path == "/contacts/add" -> AddFriendPage()
+        entry.path == "/me/notices" -> NoticesPage()
         entry.path == "/me/settings" -> SettingsPage()
         entry.path == "/me/settings/blocks" -> BlocksPage()
         entry.path == "/me/settings/privacy" -> PrivacyPage()
@@ -128,6 +132,6 @@ private fun KickedDialog(im: ImSession, model: AppModel) {
         tag = "kicked-dialog",
         onDismiss = {},
         dismissible = false,
-        confirm = { TextButton({ model.logout() }, Modifier.tag("kicked-ok")) { T("确定", color = Tt.colors.brand) } },
+        confirm = { TextButton({ model.logout(keepNoticeSeen = true) }, Modifier.tag("kicked-ok")) { T("确定", color = Tt.colors.brand) } },
     ) { T(fatalText(fatal)) }
 }

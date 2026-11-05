@@ -4,7 +4,7 @@
 #   scripts/run-tests.sh e2e                 对真实 im-server 的端到端（自动启停 scripts/test-server.sh）
 #   scripts/run-tests.sh shots               截图巡检，PNG 拉到 shots/
 #   scripts/run-tests.sh class <类或类#方法>  只跑指定用例
-# 设备用 ANDROID_SERIAL 选（默认 adb 唯一的设备）。
+# 设备用 ANDROID_SERIAL 选（默认 adb 唯一的设备，有多台时报错）。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
@@ -13,10 +13,13 @@ adb="$ANDROID_HOME/platform-tools/adb"
 [[ -n "${ANDROID_SERIAL:-}" ]] && adb="$adb -s $ANDROID_SERIAL"
 pkg=com.tianting.app
 runner="$pkg.test/androidx.test.runner.AndroidJUnitRunner"
-UI_CLASSES="$pkg.NavLoginTest,$pkg.ConvListTest,$pkg.ChatTest,$pkg.SocialTest,$pkg.M4Test,$pkg.ModerationUiTest,$pkg.PolicyTest,$pkg.LayoutScaleTest"
+UI_CLASSES="$pkg.NavLoginTest,$pkg.ConvListTest,$pkg.ChatTest,$pkg.SocialTest,$pkg.M4Test,$pkg.ModerationUiTest,$pkg.NoticesUiTest,$pkg.PolicyTest,$pkg.LayoutScaleTest"
 
+# 先编译再用 adb 装：只碰 ANDROID_SERIAL 指定的设备（gradle 的 install 任务会枚举所有已连接设备）。多台设备时没有设置 ANDROID_SERIAL 就报错。
 install() {
-  ./gradlew -q :app:installDebug :app:installDebugAndroidTest
+  ./gradlew -q :app:assembleDebug :app:assembleDebugAndroidTest
+  $adb install -r -t app/build/outputs/apk/debug/app-debug.apk > /dev/null
+  $adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk > /dev/null
 }
 
 instrument() { # 其余参数原样传给 am instrument；有失败或进程崩溃就返回非 0。原始输出在 build/instrument.txt

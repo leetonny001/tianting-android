@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 启动本机测试服务端（测试模式 + 演示登录 + 第二批功能），模拟器用 10.0.2.2 访问。
+# 启动本机测试服务端（测试模式 + 演示登录 + 第二批功能 + 系统推送），模拟器用 10.0.2.2 访问。
 #   scripts/test-server.sh start   编译并启动，密钥写到 build/test-server/env（每次随机，只给本机测试用，不进仓库）
 #   scripts/test-server.sh stop
 # 服务端源码默认在同级目录 ../tianting-server/server 或 ../im-mvp/server，也可以用 TIANTING_SERVER_DIR 指定。
@@ -46,7 +46,7 @@ admin_key="$(rnd)"
 callers="$dir/callers.json"
 secret_b64="$(printf '%s' "$caller_secret" | base64 | tr -d '\n')"
 cat > "$callers" <<JSON
-[{"id":"android-e2e","alg":"hmac-sha256","secret":"$secret_b64","scopes":["user.ban","msg.delete","mute.write","social.settings","social.friends"]}]
+[{"id":"android-e2e","alg":"hmac-sha256","secret":"$secret_b64","scopes":["user.ban","msg.delete","mute.write","social.settings","social.friends","push.user","push.all"],"pushTypes":["notice","promo"]}]
 JSON
 chmod 600 "$callers"
 
@@ -57,6 +57,7 @@ IM_DB="$dir/im.db" \
 IM_TEST_MODE=1 \
 IM_DEMO_LOGIN=1 \
 IM_V13_ADMIN_FEATURES=1 \
+IM_PUSH_ENABLED=1 \
 IM_QUARANTINE_KEY="$(rnd)" \
 IM_JWT_SECRET="$(rnd)" \
 IM_ADMIN_KEY="$admin_key" \

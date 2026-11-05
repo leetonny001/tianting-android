@@ -21,6 +21,7 @@ val ROUTE_PATTERNS = listOf(
     "/user/:userId",
     "/user/:userId/remark",
     "/me",
+    "/me/notices",
     "/me/settings",
     "/me/settings/blocks",
     "/me/settings/privacy",

@@ -179,6 +179,10 @@ fun MePage() {
                 }
             }
             TtRow(tag = "me-settings", onClick = { nav.go("/me/settings") }) { T("设置") }
+            TtRow(tag = "me-notices", onClick = { nav.go("/me/notices") }) {
+                T("系统通知", Modifier.weight(1f))
+                if (im.noticeState.unseen > 0) Badge("${im.noticeState.unseen}", "me-notices-count")
+            }
         }
         TabBar("/me")
     }

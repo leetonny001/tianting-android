@@ -150,6 +150,10 @@ class FakeServer(val self: String = "alice") : Transport {
     var messages = java.util.concurrent.ConcurrentHashMap<String, List<JsonObject>>()
     private var seq = 1000L
 
+    /** 收件箱（push.data）：pushSync 从这里取。 */
+    @Volatile var inbox: List<JsonObject> = emptyList()
+    @Volatile var latestOverride: Long? = null
+
     val current: FakeConnection get() = inner.current
 
     override fun open(url: String, handlers: TransportHandlers): TransportConnection {
@@ -165,6 +169,8 @@ class FakeServer(val self: String = "alice") : Transport {
     fun push(frame: JsonObject) = net.execute { current.receive(frame) }
     fun pushMsg(m: JsonObject) = push(obj("cmd" to "msg", "data" to m))
     fun pushEvent(type: String, vararg pairs: Pair<String, Any?>) = push(obj("cmd" to "event", "data" to obj("type" to type, *pairs)))
+
+    fun pushFrame(data: JsonObject) = push(obj("cmd" to "push", "data" to data))
 
     fun drop(code: Int = 1006) = net.execute { current.drop(code) }
 
@@ -226,6 +232,12 @@ class FakeServer(val self: String = "alice") : Transport {
                 "settings" to obj("searchable" to searchable), "mode" to mode, "strangerMsgLimit" to strangerMsgLimit, "official" to official,
             ),
         )
+        "pushSync" -> {
+            val after = f.data["afterSeq"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0
+            val out = inbox.filter { it["pushSeq"]!!.jsonPrimitive.content.toLong() > after }
+            val latest = inbox.maxOfOrNull { it["pushSeq"]!!.jsonPrimitive.content.toLong() } ?: 0
+            Reply.Data(obj("pushes" to out, "hasMore" to false, "latestSeq" to (latestOverride ?: latest)))
+        }
         "users" -> Reply.Data(obj("users" to (f.data["userIds"] as? JsonArray).orEmpty().mapNotNull { users[it.jsonPrimitive.content] }))
         "sync" -> {
             val conv = f.data["convId"]!!.jsonPrimitive.content
@@ -302,6 +314,12 @@ abstract class UiTest {
             intent.data = Uri.parse(deepLink)
         }
         scenario = ActivityScenario.launch(intent)
+    }
+
+    /** 模拟 App 重启：关掉 Activity，再打开一次（App 模型由测试换好）。 */
+    fun scenarioRestart() {
+        scenario?.close()
+        scenario = ActivityScenario.launch(MainActivity::class.java)
     }
 
     /** 安装假依赖并打开 App（已登录）。 */
