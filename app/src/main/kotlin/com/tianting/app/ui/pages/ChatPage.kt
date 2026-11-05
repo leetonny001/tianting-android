@@ -268,6 +268,8 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
     LaunchedEffect(conv != null) { if (conv != null) probe = null }
 
     val blocked = blockedBy(snapshot, probe)
+    // 不能发送时输入内容不保留（F-UI-33 规则 5）。Composer 离开组合时存的草稿先于这里运行；禁言不走这条，内容保留。
+    LaunchedEffect(blocked != null, convId) { if (blocked != null) im.drafts.remove(convId) }
     val probing = isGroup && (loadedSnapshot == null || (unknown && !probeDone)) && blocked == null
 
     suspend fun loadMore() {

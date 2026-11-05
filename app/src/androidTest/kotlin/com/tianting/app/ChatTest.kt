@@ -1,5 +1,6 @@
 package com.tianting.app
 
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.*
 import com.tianting.app.core.*
@@ -481,6 +482,18 @@ class ChatTest : UiTest() {
         server.pushEvent("convRemoved", "convId" to G1)
         rule.waitGoneTag("composer-input")
         n("composer-disabled").assertTextEquals("你已不在该群，无法发送消息")
+    }
+
+    @Test fun removed_drops_typed_text() { // F-UI-33 规则 5
+        server.group("member")
+        start("tianting://chat/group%3Ag1")
+        rule.waitTag("composer-input")
+        n("composer-input").performTextInput("没发出去的话")
+        rule.waitForIdle()
+        server.pushEvent("convRemoved", "convId" to G1)
+        rule.waitTag("composer-disabled")
+        rule.waitForIdle()
+        inst.runOnMainSync { assertEquals(null, model.im?.drafts?.get(G1)) }
     }
 
     @Test fun reconnect_infers_removal() { // AC-UI-33-9
