@@ -75,6 +75,13 @@ const val MESSAGE_DELETED = "该消息已被删除"
 /** 封禁（4034、kicked.reason = suspended）：永久（null）或缺字段时没有解封时间。 */
 fun bannedText(until: Long?): String = if (until != null) "账号已被封禁，解封时间：${formatDateTime(until)}" else "账号已被封禁"
 
+/** 全群禁言的禁言条（F-UI-41 规则 3，AC-UI-41-6）。 */
+const val GROUP_ALL_MUTED = "群主已开启全员禁言"
+
+/** 禁言条的文案：全群禁言没有解除时间。 */
+fun mutedText(mute: com.tianting.sdk.MuteInfo): String =
+    if (mute.scope == com.tianting.sdk.MuteScope.GROUP_ALL) GROUP_ALL_MUTED else mutedText(mute.mutedUntil)
+
 /** 禁言条（4031、muted，F-UI-41）：永久（null）没有解除时间。 */
 fun mutedText(until: Long?): String = if (until != null) "你已被禁言，解除时间：${formatMonthDayTime(until)}" else defaultMessage(4031)
 

@@ -261,6 +261,24 @@ class ServerE2eTest {
         waitTag("composer-input", 3000)
     }
 
+    @Test fun group_all_mute_bar_then_recover() { // 全群禁言对真实服务端：AC-UI-41-6、AC-ADM-42-1、42-2
+        val (a, b) = uid("a") to uid("b")
+        users(a, b)
+        val (g, c) = group(a, b)
+        appLogin(a)
+        open(chatPath(c))
+        waitTag("composer-input")
+        signed("POST", "/admin/mute", obj("scope" to "groupAll", "groupId" to g, "reason" to "e2e"))
+        waitTag("composer-disabled", 3000)
+        assertEquals("群主已开启全员禁言", allTextOf("composer-disabled"))
+        assertFalse(rule.onAllNodesWithTag("composer-input", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty())
+        signed("POST", "/admin/unmute", obj("scope" to "groupAll", "groupId" to g, "reason" to "e2e"))
+        waitTag("composer-input", 3000)
+        say("恢复了")
+        rule.waitUntil(8000) { rule.onAllNodes(hasTestTag("sending-icon"), useUnmergedTree = true).fetchSemanticsNodes().isEmpty() }
+        assertFalse(rule.onAllNodesWithTag("failed-icon", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty())
+    }
+
     private fun allTextOf(tag: String) = allText(rule.onNodeWithTag(tag, useUnmergedTree = true).fetchSemanticsNode())
 
     @Test fun banned_online_then_login_refused() { // 被封禁：AC-UI-43-1、43-3

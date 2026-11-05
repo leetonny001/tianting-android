@@ -40,6 +40,63 @@ class ModerationUiTest : UiTest() {
         rule.waitTag("composer-input")
     }
 
+    @Test fun group_all_mute_member_bar_and_recover() { // AC-UI-41-6（TC-UI-41-07）
+        server.convs = listOf(convJson(G1, "群一", memberCount = 3, myRole = "member"), convJson("group:g2", "群二", memberCount = 3, myRole = "member"))
+        start("tianting://chat/group%3Ag1")
+        rule.waitTag("composer-input")
+        server.pushEvent("muted", "scope" to "groupAll", "groupId" to "g1", "mutedUntil" to null)
+        rule.waitTag("composer-disabled")
+        n("composer-disabled").assertTextEquals("群主已开启全员禁言")
+        assertFalse(rule.hasTag("composer-input"))
+        inst.runOnMainSync { model.nav.resetTo(chatPath("group:g2")) } // 只影响该群
+        rule.waitTag("composer-input")
+        inst.runOnMainSync { model.nav.resetTo(chatPath(G1)) }
+        rule.waitTag("composer-disabled")
+        server.pushEvent("unmuted", "scope" to "groupAll", "groupId" to "g1")
+        rule.waitTag("composer-input")
+        assertFalse(rule.hasTag("composer-disabled"))
+    }
+
+    @Test fun group_all_mute_from_convs_on_open() { // AC-UI-41-6：离线开启，上线从 convs 的 allMuted 拿到
+        server.convs = listOf(convJson(G1, "群一", memberCount = 3, myRole = "member", allMuted = true))
+        start("tianting://chat/group%3Ag1")
+        rule.waitTag("composer-disabled")
+        n("composer-disabled").assertTextEquals("群主已开启全员禁言")
+    }
+
+    @Test fun group_all_mute_does_not_block_owner() { // F-ADM-42：群主仍可发言
+        server.convs = listOf(convJson(G1, "群一", memberCount = 3, myRole = "owner", allMuted = true))
+        start("tianting://chat/group%3Ag1")
+        rule.waitTag("composer-input")
+        server.pushEvent("muted", "scope" to "groupAll", "groupId" to "g1", "mutedUntil" to null)
+        Thread.sleep(300)
+        rule.waitForIdle()
+        assertTrue(rule.hasTag("composer-input"))
+        assertFalse(rule.hasTag("composer-disabled"))
+    }
+
+    @Test fun group_all_mute_does_not_block_admin() { // F-ADM-42
+        server.convs = listOf(convJson(G1, "群一", memberCount = 3, myRole = "admin"))
+        start("tianting://chat/group%3Ag1")
+        rule.waitTag("composer-input")
+        server.pushEvent("muted", "scope" to "groupAll", "groupId" to "g1", "mutedUntil" to null)
+        Thread.sleep(300)
+        rule.waitForIdle()
+        assertTrue(rule.hasTag("composer-input"))
+        assertFalse(rule.hasTag("composer-disabled"))
+    }
+
+    @Test fun group_all_send_4031_shows_bar_and_failed_icon() { // F-UI-41 规则 5：角色过期时以服务端为准
+        server.convs = listOf(convJson(G1, "群一", memberCount = 3, myRole = "member"))
+        server.fail("send", 4031, details = obj("scope" to "groupAll", "groupId" to "g1", "mutedUntil" to null))
+        start("tianting://chat/group%3Ag1")
+        type("composer-input", "说话")
+        click("send-button")
+        rule.waitTag("composer-disabled")
+        n("composer-disabled").assertTextEquals("群主已开启全员禁言")
+        rule.waitTag("failed-icon")
+    }
+
     @Test fun mute_expires_by_timer() { // AC-UI-41-4：SDK 的定时器到点恢复（真实时间短禁言）
         server.convs = listOf(convJson(BOB_CONV, "bob"))
         start("tianting://chat/c2c%3Aalice%3Abob")

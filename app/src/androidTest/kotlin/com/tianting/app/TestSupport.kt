@@ -75,12 +75,14 @@ fun convJson(
     memberCount: Int? = null,
     myRole: String? = null,
     updatedAt: Long = T0,
+    allMuted: Boolean = false,
 ): JsonObject {
     val m = linkedMapOf<String, Any?>(
         "convId" to convId, "type" to if (convId.startsWith("group:")) "group" else "c2c", "name" to name, "maxSeq" to maxSeq,
         "readSeq" to maxSeq - unread, "minSeq" to 1, "unread" to unread, "lastMsg" to lastMsg, "updatedAt" to updatedAt,
     )
     memberCount?.let { m["memberCount"] = it }
+    if (allMuted) m["allMuted"] = true
     myRole?.let { m["myRole"] = it }
     return js(m).jsonObject
 }

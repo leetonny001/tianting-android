@@ -437,7 +437,7 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
         when {
             probing -> Unit
             blocked != null -> DisabledBar(blocked.bar)
-            mute != null -> DisabledBar(mutedText(mute!!.mutedUntil))
+            mute != null -> DisabledBar(mutedText(mute!!))
             else -> Composer(convId) { newCount = 0 }
         }
     }
