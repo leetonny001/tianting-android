@@ -337,6 +337,9 @@ class AccountCopyTest {
         assertEquals("你的恢复码已重新生成", securityNoticeText("recoveryCodeRegenerated"))
         assertEquals("检测到你的账号登录凭证异常", securityNoticeText("refreshReplay"))
         assertEquals("你的账号登录凭证刷新过于频繁", securityNoticeText("refreshRateLimited"))
+        assertEquals("你的账号正在新的网络使用", securityNoticeText("newIpPrefix"))
+        assertEquals("你的账号密码已被修改", securityNoticeText("passwordChanged"))
+        assertEquals("你的账号已通过恢复码重设密码", securityNoticeText("passwordRecovered"))
         assertNull(securityNoticeText("futureKind"))
     }
 

@@ -129,7 +129,7 @@ const val ACCOUNT_DELETION_REQUESTED = "已申请注销账号。7 天内可以�
 const val RECOVERY_LOST_WARNING = "恢复码丢失后账号无法找回"
 
 /**
- * securityNotice 的提示。新设备登录的文案来自 PRD（AC-ACC-02-13），其他三个是实现时加的，待确认（问题表）。
+ * securityNotice 的提示。新设备登录的文案来自 PRD（AC-ACC-02-13），其他的是实现时加的，待确认（问题表 A12）。
  * SDK 已经滤掉不认识的 kind，这里返回 null 再防一层：内部的值不给用户看。
  */
 fun securityNoticeText(kind: String): String? = when (kind) {
@@ -137,6 +137,9 @@ fun securityNoticeText(kind: String): String? = when (kind) {
     "recoveryCodeRegenerated" -> "你的恢复码已重新生成"
     "refreshReplay" -> "检测到你的账号登录凭证异常"
     "refreshRateLimited" -> "你的账号登录凭证刷新过于频繁"
+    "newIpPrefix" -> "你的账号正在新的网络使用"
+    "passwordChanged" -> "你的账号密码已被修改"
+    "passwordRecovered" -> "你的账号已通过恢复码重设密码"
     else -> null
 }
 
