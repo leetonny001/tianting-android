@@ -165,7 +165,8 @@ fun MePage() {
         TopBar(title = "我")
         ConnBanner()
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            TtRow(minHeight = 96.dp) {
+            // 账号会话能改昵称（F-UI-15 规则 2、AC-UI-15-3）。演示会话没有入口。
+            TtRow(tag = "me-card", minHeight = 96.dp, onClick = if (im.isAccount) ({ nav.go("/me/nickname") }) else null) {
                 Avatar(im.self, name, 64.dp, src = profile?.avatar)
                 Column(Modifier.weight(1f)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -177,6 +178,7 @@ fun MePage() {
                         CopyButton(im.self, "me-copy")
                     }
                 }
+                if (im.isAccount) EditChevron()
             }
             TtRow(tag = "me-settings", onClick = { nav.go("/me/settings") }) { T("设置") }
             TtRow(tag = "me-notices", onClick = { nav.go("/me/notices") }) {
@@ -204,6 +206,7 @@ fun SettingsPage() {
                 if (im.blocks.isNotEmpty()) T("${im.blocks.size}", Modifier.tag("settings-blocks-count"), color = Tt.colors.textSecondary)
             }
             TtRow(tag = "settings-appearance", onClick = { nav.go("/me/settings/appearance") }) { T("外观") }
+            if (im.isAccount) TtRow(tag = "settings-security", onClick = { nav.go("/me/settings/security") }) { T("账号安全") }
             Column(Modifier.tag("about").padding(top = 12.dp)) {
                 TtRow { T("关于天听") }
                 TtRow { T("版本 ${com.tianting.app.BuildConfig.VERSION_NAME}（构建 ${com.tianting.app.BuildConfig.BUILD_ID}）", Modifier.tag("app-version"), style = Tt.type.small, color = Tt.colors.textSecondary) }

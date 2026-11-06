@@ -26,6 +26,7 @@ import com.tianting.app.ui.pages.ApplyPage
 import com.tianting.app.ui.pages.BlocksPage
 import com.tianting.app.ui.pages.ChatInfoPage
 import com.tianting.app.ui.pages.ChatPage
+import com.tianting.app.ui.pages.ChangePasswordPage
 import com.tianting.app.ui.pages.ChatsPage
 import com.tianting.app.ui.pages.ContactsPage
 import com.tianting.app.ui.pages.GroupInvitePage
@@ -37,9 +38,13 @@ import com.tianting.app.ui.pages.LoginPage
 import com.tianting.app.ui.pages.MePage
 import com.tianting.app.ui.pages.NoticeBannerHost
 import com.tianting.app.ui.pages.NoticesPage
+import com.tianting.app.ui.pages.NicknamePage
 import com.tianting.app.ui.pages.PrivacyNoticePage
 import com.tianting.app.ui.pages.PrivacyPage
 import com.tianting.app.ui.pages.RecoveryPage
+import com.tianting.app.ui.pages.RegenerateRecoveryPage
+import com.tianting.app.ui.pages.LogoutOthersPage
+import com.tianting.app.ui.pages.SecurityPage
 import com.tianting.app.ui.pages.RemarkPage
 import com.tianting.app.ui.pages.RequestsPage
 import com.tianting.app.ui.pages.SettingsPage
@@ -109,6 +114,7 @@ private fun Route(entry: Navigator.Entry) {
         entry.path == "/me/settings/privacy" -> PrivacyPage()
         entry.path == "/me/settings/appearance" -> AppearancePage()
         entry.path == "/me/settings/privacy-notice" -> PrivacyNoticePage(LocalApp.current.cachedConfig?.privacyNotice?.url) { nav.back() }
+        entry.path == "/me/nickname" || entry.path.startsWith("/me/settings/security") -> AccountRoute(entry.path)
         seg[0] == "contacts" && seg.getOrNull(1) == "apply" && seg.size == 3 -> ApplyPage(decodeParam(seg[2]), entry.state)
         seg[0] == "user" && seg.size == 2 -> UserPage(decodeParam(seg[1]), entry.state)
         seg[0] == "user" && seg.size == 3 && seg[2] == "remark" -> RemarkPage(decodeParam(seg[1]))
@@ -124,6 +130,23 @@ private fun Route(entry: Navigator.Entry) {
             }
         }
         else -> nav.setRootLater()
+    }
+}
+
+/** 账号页面：演示会话没有入口（F-ACC-07 规则 5），deep link 进来也回到会话列表。 */
+@Composable
+private fun AccountRoute(path: String) {
+    if (!LocalIm.current.isAccount) {
+        LocalNav.current.setRootLater()
+        return
+    }
+    when (path) {
+        "/me/nickname" -> NicknamePage()
+        "/me/settings/security" -> SecurityPage()
+        "/me/settings/security/password" -> ChangePasswordPage()
+        "/me/settings/security/recovery" -> RegenerateRecoveryPage()
+        "/me/settings/security/others" -> LogoutOthersPage()
+        else -> LocalNav.current.setRootLater()
     }
 }
 

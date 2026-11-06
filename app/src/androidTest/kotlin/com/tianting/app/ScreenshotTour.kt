@@ -102,6 +102,61 @@ class ScreenshotTour : UiTest() {
         rule.waitTag("login-username"); shot("$prefix-21-login")
     }
 
+    /** FE-615、FE-616 的账号页面（AC-CHAT-90-9：深色模式截图）。 */
+    private fun accountTour(prefix: String, pref: ThemePref) {
+        http.demoLogin = false
+        http.registerMode = "invite"
+        http.privacy = obj("version" to "v1", "url" to "https://invalid.invalid/p")
+        http.eventsBody = obj(
+            "events" to listOf(
+                obj("kind" to "newDeviceLogin", "at" to System.currentTimeMillis(), "platform" to "android"),
+                obj("kind" to "passwordChanged", "at" to System.currentTimeMillis() - 86_400_000L, "platform" to "ios"),
+                obj("kind" to "recoveryCodeRegenerated", "at" to System.currentTimeMillis() - 2 * 86_400_000L),
+            ),
+            "otherSessions" to obj("count" to 2, "lastActiveAt" to System.currentTimeMillis() - 3_600_000L),
+        )
+        server.users["alice"] = obj("userId" to "alice", "nickname" to "爱丽丝")
+        install(loggedIn = false)
+        inst.runOnMainSync { model.setTheme(pref) }
+        launch()
+        rule.waitTag("account-username"); shot("$prefix-30-login")
+        type("account-username", "alice"); type("account-password", "wrong-pass")
+        http.err("/v1/account/login", 401, 4018)
+        click("account-submit"); rule.waitTag("account-error"); shot("$prefix-31-login-error")
+        http.handlers.remove("/v1/account/login")
+        click("login-to-recover"); rule.waitTag("recover-username"); shot("$prefix-32-recover")
+        androidx.test.uiautomator.UiDevice.getInstance(inst).pressBack(); rule.waitTag("account-username")
+        click("login-to-register"); rule.waitTag("register-username")
+        type("register-username", "alice_1"); type("register-password", "Good-pass-1"); type("register-invite", "INVITE")
+        http.err("/v1/account/register", 409, 4095)
+        click("register-submit"); rule.waitTag("register-username-error"); shot("$prefix-33-register")
+        http.handlers.remove("/v1/account/register")
+        http.handlers["/v1/account/register"] = { FakeAccountHttp.Reply.Json(http.auth(code = "K7QF-3M9X-TZ2P-8HNB-5WRD-C4VY-6JGE-A1LS")) }
+        click("register-submit"); rule.waitTag("recovery-code"); shot("$prefix-34-recovery")
+        click("recovery-saved"); rule.waitTag("tab-chats")
+        click("tab-me"); rule.waitTag("me-card"); shot("$prefix-35-me")
+        go("/me/nickname"); rule.waitTag("nickname-input"); shot("$prefix-36-nickname")
+        inst.runOnMainSync { model.nav.resetTo("/me/settings") }; rule.waitTag("settings-security"); shot("$prefix-37-settings")
+        click("settings-security"); rule.waitTag("security-event"); shot("$prefix-38-security")
+        click("security-delete"); rule.waitTag("delete-dialog"); shot("$prefix-39-delete")
+        click("delete-cancel")
+        go("/me/settings/security/password"); rule.waitTag("password-old"); shot("$prefix-40-password")
+        inst.runOnMainSync { model.nav.back() }
+        go("/me/settings/security/others"); rule.waitTag("others-password"); shot("$prefix-41-others")
+        inst.runOnMainSync { model.nav.back() }
+        server.pushEvent("kicked", "reason" to "passwordChanged", "recoverBefore" to System.currentTimeMillis() + 7 * 86_400_000L)
+        server.drop(4012)
+        rule.waitTag("kicked-dialog"); shot("$prefix-42-recover-date")
+        click("kicked-ok"); rule.waitTag("account-username")
+        http.handlers["/v1/config"] = { FakeAccountHttp.Reply.NetworkFail }
+        inst.runOnMainSync { model.retryConfig() }
+        rule.waitTag("config-error"); shot("$prefix-43-config-failed")
+    }
+
+    @Test fun account_light() = accountTour("light", ThemePref.LIGHT)
+
+    @Test fun account_dark() = accountTour("dark", ThemePref.DARK)
+
     @Test fun light() = tour("light", ThemePref.LIGHT)
 
     @Test fun dark() = tour("dark", ThemePref.DARK)

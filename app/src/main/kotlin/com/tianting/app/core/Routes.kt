@@ -26,6 +26,11 @@ val ROUTE_PATTERNS = listOf(
     "/me/settings/blocks",
     "/me/settings/privacy",
     "/me/settings/appearance",
+    "/me/nickname",
+    "/me/settings/security",
+    "/me/settings/security/password",
+    "/me/settings/security/recovery",
+    "/me/settings/security/others",
     "/me/settings/privacy-notice",
 )
 
