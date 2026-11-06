@@ -37,10 +37,13 @@ import java.io.Closeable
 class ImSession(
     val client: IMClient,
     val self: String,
+    /** 账号会话（Session mode=account）：有"账号安全"、能改昵称。演示会话隐藏（F-ACC-07 规则 5）。 */
+    val isAccount: Boolean,
     val collator: PinyinCollator?,
     private val isOnlineNow: () -> Boolean,
     private val toast: (String) -> Unit,
     noticePrefs: NoticePrefs,
+    private val onRecoveryCodeUnacked: () -> Unit = {},
 ) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -114,7 +117,7 @@ class ImSession(
         scope.launch(start = CoroutineStart.UNDISPATCHED) { flow.collect { set(it) } }
     }
 
-    fun start(token: String, bindNetwork: (IMClient) -> Closeable?) {
+    fun start(bindNetwork: (IMClient) -> Closeable?, connect: (IMClient) -> Unit) {
         val c = client
         bind(c.conversations) { convs = it }
         bind(c.truncated) { truncated = it }
@@ -139,13 +142,16 @@ class ImSession(
                     is IMEvent.SendFailed -> onSendFailed(e)
                     is IMEvent.MuteChanged -> muteTick++
                     is IMEvent.ConvRemoved -> removedTick++
+                    is IMEvent.SecurityNotice -> toast(SECURITY_NOTICE_NEW_DEVICE) // 这一批 SDK 只发 newDeviceLogin（AC-ACC-02-13）
+                    is IMEvent.RecoveryCodeUnacked -> onRecoveryCodeUnacked()
+                    is IMEvent.ProfileChanged -> fetchProfiles(listOf(e.userId)) // SDK 已经更新缓存，这里取到的就是新昵称（AC-ACC-06-5）
                     else -> Unit
                 }
                 _events.emit(e)
             }
         }
         network = bindNetwork(c)
-        c.connect(token)
+        connect(c)
     }
 
     /** F-UI-08 规则 3：每条消息每次失败只提示一次。4035 / 4036 / 4137 插提示条，4031 有禁用条；超时、被踢都不提示。 */

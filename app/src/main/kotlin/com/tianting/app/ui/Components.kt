@@ -58,6 +58,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -354,6 +355,7 @@ fun TtInput(
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     keyboardActions: KeyboardActions = KeyboardActions.Default,
     enabled: Boolean = true,
+    password: Boolean = false,
 ) {
     BasicTextField(
         value,
@@ -366,7 +368,7 @@ fun TtInput(
         keyboardActions = keyboardActions,
         textStyle = Tt.type.body.copy(color = Tt.colors.textPrimary),
         cursorBrush = SolidColor(Tt.colors.brand),
-        visualTransformation = VisualTransformation.None,
+        visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
         decorationBox = { inner ->
             Box(
                 Modifier.fillMaxWidth().heightIn(min = TtDimen.sizeTouchMin.dp)

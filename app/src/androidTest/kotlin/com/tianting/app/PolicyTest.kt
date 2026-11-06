@@ -28,6 +28,10 @@ import androidx.test.uiautomator.UiDevice
 import com.tianting.app.ui.theme.DarkTokens
 import com.tianting.app.ui.theme.LightTokens
 import com.tianting.app.core.KeystoreSessionStore
+import com.tianting.sdk.AccountSession
+import com.tianting.sdk.PendingLogout
+import com.tianting.sdk.SessionMode
+import kotlinx.coroutines.runBlocking
 import java.io.File
 
 /** PRD-ui 3.6 节的原生写法：返回键不关弹窗、凭证和偏好的存放、https 头像。 */
@@ -63,18 +67,55 @@ class PolicyTest : UiTest() {
         rule.waitTag("tab-chats")
     }
 
-    @Test fun token_store_is_encrypted_and_cleared() { // AC-UI-16-3、AC-UI-90-2
+    @Test fun token_store_is_encrypted_and_cleared() = runBlocking { // AC-UI-16-3、AC-UI-90-2，F-ACC-03 规则 8
         val store = KeystoreSessionStore(testContext)
         store.clear()
         val secret = "ZXQ-TOKEN-" + System.nanoTime()
-        store.save(Session("alice", secret))
+        val refresh = "ZXQ-REFRESH-" + System.nanoTime()
+        val saved = AccountSession(SessionMode.ACCOUNT, "alice", secret, 123, refresh, 456, 789)
+        store.save(saved)
         val file = File(testContext.noBackupFilesDir, KeystoreSessionStore.FILE)
         assertTrue(file.isFile)
         assertFalse(secret in file.readText(), "token 明文落盘")
-        assertEquals(Session("alice", secret), KeystoreSessionStore(testContext).load())
+        assertFalse(refresh in file.readText(), "refresh 明文落盘")
+        assertEquals(saved, KeystoreSessionStore(testContext).load())
         store.clear()
         assertFalse(file.exists())
         assertEquals(null, store.load())
+    }
+
+    @Test fun pending_logout_store_is_encrypted() = runBlocking { // TC-ACC-04-06：待退出只有 sid 和 refresh，也要加密
+        val store = KeystorePendingLogoutStore(testContext)
+        val refresh = "ZXQ-PENDING-" + System.nanoTime()
+        val items = listOf(PendingLogout("sid-a", refresh), PendingLogout("sid-b", refresh + "2"))
+        store.save(items)
+        val file = File(testContext.noBackupFilesDir, KeystorePendingLogoutStore.FILE)
+        assertTrue(file.isFile)
+        val raw = file.readText()
+        assertFalse(refresh in raw, "refresh 明文落盘")
+        assertFalse("sid-a" in raw, "sid 明文落盘")
+        assertEquals(items, KeystorePendingLogoutStore(testContext).load())
+        store.save(emptyList())
+        assertFalse(file.exists())
+        assertEquals(emptyList(), store.load())
+    }
+
+    @Test fun old_session_file_reads_as_demo() = runBlocking { // TC-ACC-03-18：老版本的文件是 {userId, token}，同样的密钥
+        val store = KeystoreSessionStore(testContext)
+        store.clear()
+        com.tianting.app.core.EncryptedFile(testContext, KeystoreSessionStore.FILE).write("""{"userId":"alice","token":"old-token"}""")
+        val s = store.load()
+        assertEquals("alice", s?.userId)
+        assertEquals("old-token", s?.accessToken)
+        assertEquals(null, s?.mode)
+        store.clear()
+    }
+
+    @Test fun unreadable_session_file_means_logged_out() = runBlocking {
+        val store = KeystoreSessionStore(testContext)
+        File(testContext.noBackupFilesDir, KeystoreSessionStore.FILE).writeText("not base64 not cipher")
+        assertEquals(null, store.load())
+        assertFalse(File(testContext.noBackupFilesDir, KeystoreSessionStore.FILE).exists())
     }
 
     @Test fun shared_prefs_only_have_ui_keys() { // AC-UI-90-2
@@ -84,7 +125,8 @@ class PolicyTest : UiTest() {
         click("appearance-dark")
         waitFor("saved") { testContext.getSharedPreferences(UiPrefs.FILE, Context.MODE_PRIVATE).contains(UiPrefs.THEME) }
         val dir = File(testContext.applicationInfo.dataDir, "shared_prefs")
-        val files = dir.listFiles().orEmpty().map { it.nameWithoutExtension }
+        // 系统 WebView（隐私说明页，F-ACC-10）自己写的偏好文件不是 App 写的，里面没有账号数据（问题单 A5）。
+        val files = dir.listFiles().orEmpty().map { it.nameWithoutExtension }.filterNot { it.startsWith("WebView") || it.startsWith("Aw") }
         assertTrue(files.isNotEmpty())
         for (name in files) {
             val all = testContext.getSharedPreferences(name, Context.MODE_PRIVATE).all
@@ -136,11 +178,11 @@ class LayoutScaleTest {
 
     private fun setup(width: Int = 320, fontScale: Float = 1f, darkSystem: Boolean = false, block: FakeServer.() -> Unit = {}): AppModel {
         server.block()
-        val sessions = MemorySessions(Session("alice", "t"))
+        val sessions = MemorySessions(AccountSession(mode = SessionMode.DEMO, userId = "alice", accessToken = "t"))
         lateinit var model: AppModel
         inst.runOnMainSync {
             clearUiPrefs()
-            model = AppModel(testContext, AppDeps({ v -> com.tianting.sdk.IMClient(com.tianting.sdk.IMClientOptions("ws://fake/ws", transport = server, isVisible = v)) }, { _, _ -> error("no") }, sessions, { true }, { null }))
+            model = AppModel(testContext, AppDeps({ v -> com.tianting.sdk.IMClient(com.tianting.sdk.IMClientOptions("ws://fake/ws", transport = server, isVisible = v)) }, { _, _ -> error("no") }, sessions, { true }, { null }, fakeAccount(sessions)))
             testApp.model = model
         }
         rule.setContent {

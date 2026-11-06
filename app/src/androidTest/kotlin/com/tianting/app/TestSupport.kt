@@ -23,16 +23,29 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.tianting.app.core.AppDeps
 import com.tianting.app.core.AppModel
 import com.tianting.app.core.LoginApi
-import com.tianting.app.core.Session
-import com.tianting.app.core.SessionStore
 import com.tianting.app.core.UiPrefs
+import com.tianting.sdk.AccountClient
+import com.tianting.sdk.AccountClientOptions
+import com.tianting.sdk.AccountSession
+import com.tianting.sdk.Clock
+import com.tianting.sdk.HttpCall
+import com.tianting.sdk.HttpCallback
+import com.tianting.sdk.HttpRequest
+import com.tianting.sdk.HttpResponse
+import com.tianting.sdk.HttpTransport
 import com.tianting.sdk.IMClient
 import com.tianting.sdk.IMClientOptions
+import com.tianting.sdk.PendingLogout
+import com.tianting.sdk.PendingLogoutStore
+import com.tianting.sdk.SessionMode
+import com.tianting.sdk.SessionStore
+import com.tianting.sdk.Timer
 import com.tianting.sdk.Transport
 import com.tianting.sdk.TransportConnection
 import com.tianting.sdk.TransportHandlers
 import com.tianting.sdk.testing.FakeConnection
 import com.tianting.sdk.testing.FakeTransport
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -47,7 +60,10 @@ import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
+import java.net.URI
+import java.util.Base64 as JBase64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 fun js(v: Any?): JsonElement = when (v) {
@@ -157,6 +173,7 @@ class FakeServer(val self: String = "alice") : Transport {
     @Volatile var latestOverride: Long? = null
 
     val current: FakeConnection get() = inner.current
+    val connections: List<FakeConnection> get() = inner.connections.toList()
 
     override fun open(url: String, handlers: TransportHandlers): TransportConnection {
         val c = inner.open(url, handlers) as FakeConnection
@@ -262,15 +279,195 @@ class FakeServer(val self: String = "alice") : Transport {
     }
 }
 
-class MemorySessions(var session: Session? = null) : SessionStore {
-    override fun load() = session
-    override fun save(session: Session) {
+class MemorySessions(@Volatile var session: AccountSession? = null) : SessionStore {
+    val saves = CopyOnWriteArrayList<AccountSession>()
+
+    override suspend fun load() = session
+    override suspend fun save(session: AccountSession) {
+        saves.add(session)
         this.session = session
     }
 
-    override fun clear() {
+    override suspend fun clear() {
         session = null
     }
+}
+
+class MemoryPending : PendingLogoutStore {
+    @Volatile var items: List<PendingLogout> = emptyList()
+    override suspend fun load() = items
+    override suspend fun save(items: List<PendingLogout>) {
+        this.items = items
+    }
+}
+
+/** [SDK 钟]：定时器放在 SDK 账号线程上执行，和正式运行的线程一样。advance 走完才返回。 */
+class TestClock(private val on: ExecutorService, start: Long = System.currentTimeMillis()) : Clock {
+    private class Item(val at: Long, val id: Long, val fn: () -> Unit)
+
+    private val lock = Any()
+    private val timers = ArrayList<Item>()
+    private var nextId = 1L
+    @Volatile private var t = start
+
+    override fun now(): Long = t
+
+    override fun schedule(delayMs: Long, fn: () -> Unit): Timer {
+        val item = synchronized(lock) { Item(t + maxOf(0, delayMs), nextId++, fn).also { timers.add(it) } }
+        return Timer { synchronized(lock) { timers.remove(item) } }
+    }
+
+    fun advance(ms: Long) {
+        val end = t + ms
+        while (true) {
+            val due = synchronized(lock) {
+                timers.filter { it.at <= end }.minWithOrNull(compareBy<Item> { it.at }.thenBy { it.id })?.also {
+                    timers.remove(it)
+                    t = maxOf(t, it.at)
+                }
+            } ?: break
+            on.submit { due.fn() }.get()
+        }
+        t = end
+    }
+}
+
+/** 假账号接口：记录每个请求，默认按真实服务端的形状应答，测试用 handlers 改写。回复放在单独的线程上发。 */
+class FakeAccountHttp(val user: String = "alice") : HttpTransport {
+    class Req(val method: String, val path: String, val bearer: String?, val body: JsonObject)
+
+    sealed interface Reply {
+        data class Json(val data: JsonElement, val status: Int = 200) : Reply
+        data class Err(val status: Int, val code: Int, val reason: String? = null, val details: JsonObject? = null) : Reply
+        data object NetworkFail : Reply
+        data object Hold : Reply
+
+        /** 不是约定的 JSON（代理的页面）。 */
+        data class Raw(val status: Int, val text: String) : Reply
+    }
+
+    private val net = Executors.newSingleThreadExecutor()
+    private val held = CopyOnWriteArrayList<Pair<Req, HttpCallback>>()
+    val requests = CopyOnWriteArrayList<Req>()
+    val handlers = java.util.concurrent.ConcurrentHashMap<String, (Req) -> Reply>()
+
+    var registerMode = "open"
+    var demoLogin = true
+    var privacy: JsonObject? = null
+    var eventsBody: JsonObject = obj("events" to emptyList<JsonObject>(), "otherSessions" to obj("count" to 0))
+    private var nextGen = 2L
+    @Volatile var sid = "sid-1"
+    @Volatile var accessTtlMs = 24 * 3_600_000L
+
+    fun to(path: String): List<Req> = requests.filter { it.path == path }
+
+    fun jwt(gen: Long, sessionId: String = sid): String {
+        val payload = obj("sid" to sessionId, "gen" to gen, "exp" to (System.currentTimeMillis() / 1000 + 86400)).toString()
+        return "h." + JBase64.getUrlEncoder().withoutPadding().encodeToString(payload.toByteArray()) + ".s"
+    }
+
+    /** 一份 AccountSession（给已登录的用例放进存储）。 */
+    fun session(gen: Long = 1, expiresAt: Long = System.currentTimeMillis() + accessTtlMs, absolute: Long = System.currentTimeMillis() + 365 * 86_400_000L, refresh: String = "r$gen") = AccountSession(
+        mode = SessionMode.ACCOUNT, userId = user, accessToken = jwt(gen), accessExpiresAt = expiresAt, refreshToken = refresh,
+        refreshExpiresAt = System.currentTimeMillis() + 90 * 86_400_000L, absoluteExpiresAt = absolute,
+    )
+
+    /** AuthResponse。code 不为空时带这一代恢复码。 */
+    fun auth(gen: Long = nextGen++, code: String? = null, codeGen: Long = 1, unacked: Boolean = false, expiresAt: Long = System.currentTimeMillis() + accessTtlMs, absolute: Long = System.currentTimeMillis() + 365 * 86_400_000L): JsonObject {
+        val m = linkedMapOf<String, Any?>(
+            "userId" to user, "accessToken" to jwt(gen), "accessExpiresAt" to expiresAt, "refreshToken" to "r$gen",
+            "refreshExpiresAt" to System.currentTimeMillis() + 90 * 86_400_000L, "absoluteExpiresAt" to absolute,
+        )
+        if (code != null) {
+            m["recoveryCode"] = code
+            m["recoveryCodeGen"] = codeGen
+        }
+        if (unacked) m["recoveryCodeUnacked"] = true
+        return js(m).jsonObject
+    }
+
+    private fun configBody(): JsonObject {
+        val m = linkedMapOf<String, Any?>(
+            "registerMode" to registerMode, "demoLogin" to demoLogin, "features" to obj("files" to false),
+            "limits" to obj("usernameMinLen" to 4, "usernameMaxLen" to 32, "passwordMinLen" to 8, "passwordMaxLen" to 128, "nicknameMaxLen" to 32, "deviceNameMaxLen" to 64),
+        )
+        privacy?.let { m["privacyNotice"] = it }
+        return js(m).jsonObject
+    }
+
+    private fun defaultReply(r: Req): Reply = when (r.path) {
+        "/v1/config" -> Reply.Json(configBody())
+        "/v1/account/register" -> Reply.Json(auth(code = "CODE-REG-1"))
+        "/v1/account/login" -> Reply.Json(auth())
+        "/v1/account/recover" -> Reply.Json(auth(code = "CODE-REC-1", codeGen = 2))
+        "/v1/account/token/refresh" -> Reply.Json(auth())
+        "/v1/account/password" -> {
+            sid = "sid-" + (nextGen + 100)
+            Reply.Json(auth(gen = 1, code = "CODE-PW-1", codeGen = 2))
+        }
+        "/v1/account/logout-others" -> {
+            sid = "sid-" + (nextGen + 100)
+            Reply.Json(auth(gen = 1))
+        }
+        "/v1/account/recovery-code" -> Reply.Json(obj("recoveryCode" to "CODE-NEW-1", "recoveryCodeGen" to 3))
+        "/v1/account/events" -> Reply.Json(eventsBody)
+        else -> Reply.Json(JsonObject(emptyMap()))
+    }
+
+    override fun request(req: HttpRequest, callback: HttpCallback): HttpCall {
+        val r = Req(req.method, URI(req.url).path, req.headers["Authorization"]?.removePrefix("Bearer "), req.body?.let { Json.parseToJsonElement(it).jsonObject } ?: JsonObject(emptyMap()))
+        requests.add(r)
+        val reply = handlers[r.path]?.invoke(r) ?: defaultReply(r)
+        if (reply == Reply.Hold) held.add(r to callback) else net.execute { deliver(reply, callback) }
+        return HttpCall { }
+    }
+
+    private fun deliver(reply: Reply, cb: HttpCallback) {
+        when (reply) {
+            is Reply.Json -> cb.onResponse(HttpResponse(reply.status, reply.data.toString()))
+            is Reply.Err -> cb.onResponse(
+                HttpResponse(
+                    reply.status,
+                    JsonObject(listOfNotNull("code" to js(reply.code), "msg" to js("server says x"), reply.reason?.let { "reason" to js(it) }, reply.details?.let { "details" to it }).toMap()).toString(),
+                ),
+            )
+            is Reply.Raw -> cb.onResponse(HttpResponse(reply.status, reply.text))
+            Reply.NetworkFail -> cb.onFailure()
+            Reply.Hold -> Unit
+        }
+    }
+
+    /** 放行之前 Hold 的请求。 */
+    fun release(path: String, reply: Reply? = null) {
+        for (h in held.filter { it.first.path == path }) {
+            held.remove(h)
+            net.execute { deliver(reply ?: handlersDefault(h.first), h.second) }
+        }
+    }
+
+    private fun handlersDefault(r: Req): Reply = defaultReply(r)
+
+    fun releaseAll() {
+        for (h in held) {
+            held.remove(h)
+            net.execute { deliver(Reply.NetworkFail, h.second) }
+        }
+    }
+
+    fun err(path: String, status: Int, code: Int, reason: String? = null, details: JsonObject? = null) {
+        handlers[path] = { Reply.Err(status, code, reason, details) }
+    }
+}
+
+/** 不关心账号接口的用例（只要 config）。 */
+fun fakeAccount(sessions: SessionStore, http: HttpTransport = FakeAccountHttp()) =
+    AccountClient(AccountClientOptions(baseUrl = "http://fake", store = sessions, http = http))
+
+/** 换成真实依赖（对真实服务端的端到端），旧的模型释放掉。 */
+fun replaceWithRealDeps(deps: AppDeps = com.tianting.app.core.defaultDeps(testContext)) {
+    val old = testApp.model
+    inst.runOnMainSync { testApp.model = AppModel(testContext, deps) }
+    runBlocking { old.close() }
 }
 
 val testContext: Context get() = ApplicationProvider.getApplicationContext()
@@ -288,25 +485,55 @@ abstract class UiTest {
     var online = true
     var loginApi = LoginApi { _, _ -> error("unexpected login") }
     val sessions = MemorySessions()
+    val pending = MemoryPending()
     val copied = CopyOnWriteArrayList<String>()
     var copyWorks = true
+    var demoBuild = true
+    val http by lazy { FakeAccountHttp(server.self) }
+    private val accountThread by lazy { Executors.newSingleThreadExecutor() }
+    val clock by lazy { TestClock(accountThread) }
+
+    /** 新的 AccountClient，接假 HTTP、[SDK 钟] 和内存存储。模拟杀 App 重启时每次换一个。 */
+    fun newAccount() = AccountClient(
+        AccountClientOptions(
+            baseUrl = "http://fake",
+            store = sessions,
+            pendingLogoutStore = pending,
+            http = http,
+            clock = clock,
+            random = { 0.5 },
+            dispatcher = accountThread.asCoroutineDispatcher(),
+        ),
+    )
+
+    fun newDeps(transport: Transport = server, clientOptions: (visible: () -> Boolean) -> IMClientOptions = { v -> IMClientOptions(url = "ws://fake/ws", transport = transport, isVisible = v) }) = AppDeps(
+        newClient = { visible -> IMClient(clientOptions(visible)) },
+        login = { u, n -> loginApi.login(u, n) },
+        sessions = sessions,
+        isOnline = { online },
+        bindNetwork = { null },
+        account = newAccount(),
+        copyText = { t -> if (copyWorks) copied.add(t) else false },
+        demoBuild = demoBuild,
+    )
+
+    /** 换掉 App 模型。旧的释放掉，它的线程和监听不留到下一个用例。 */
+    fun replaceModel(deps: AppDeps) {
+        val old = testApp.model
+        inst.runOnMainSync { testApp.model = AppModel(testContext, deps) }
+        runBlocking { old.close() }
+    }
 
     /** 用假依赖换掉 App 模型。 */
     fun install(loggedIn: Boolean = true, transport: Transport = server, self: String = server.self) {
-        sessions.session = if (loggedIn) Session(self, "test-token") else null
-        inst.runOnMainSync {
-            testApp.model = AppModel(
-                testContext,
-                AppDeps(
-                    newClient = { visible -> IMClient(IMClientOptions(url = "ws://fake/ws", transport = transport, isVisible = visible)) },
-                    login = { u, n -> loginApi.login(u, n) },
-                    sessions = sessions,
-                    isOnline = { online },
-                    bindNetwork = { null },
-                    copyText = { t -> if (copyWorks) copied.add(t) else false },
-                ),
-            )
-        }
+        sessions.session = if (loggedIn) AccountSession(mode = SessionMode.DEMO, userId = self, accessToken = "test-token") else null
+        replaceModel(newDeps(transport))
+    }
+
+    /** 账号会话已经在存储里。 */
+    fun installAccount(session: AccountSession? = http.session()) {
+        sessions.session = session
+        replaceModel(newDeps())
     }
 
     fun launch(deepLink: String? = null) {
@@ -345,6 +572,9 @@ abstract class UiTest {
     fun finish() {
         scenario?.close()
         scenario = null
+        // 用例中途失败时可能还有 Hold 的请求：放掉，否则下面等退出结束会一直挂着
+        http.handlers.clear()
+        http.releaseAll()
         inst.runOnMainSync { testApp.model.logout() }
         runBlocking { testApp.model.awaitTeardown() }
     }

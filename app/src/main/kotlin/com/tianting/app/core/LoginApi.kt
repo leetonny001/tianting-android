@@ -14,6 +14,11 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
+/** 演示登录的结果。账号登录走 AccountClient。 */
+data class Session(val userId: String, val token: String) {
+    override fun toString(): String = "Session(***)"
+}
+
 sealed interface LoginResult {
     data class Ok(val session: Session) : LoginResult
     data class Failed(val message: String) : LoginResult

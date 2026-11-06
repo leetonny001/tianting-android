@@ -1,6 +1,11 @@
 package com.tianting.app
 
+import com.tianting.app.core.ACCOUNT_DELETION_REQUESTED
+import com.tianting.app.core.AccountPage
 import com.tianting.app.core.LoginResult
+import com.tianting.app.core.accountErrorText
+import com.tianting.app.core.accountEventText
+import com.tianting.app.core.tooManyAttemptsText
 import com.tianting.app.core.Session
 import com.tianting.app.core.bannedText
 import com.tianting.app.core.chatPath
@@ -265,5 +270,64 @@ class ReleaseConfigTest {
         assertTrue("cleartextTrafficPermitted=\"false\"" in xml)
         assertTrue("cleartextTrafficPermitted=\"true\"" !in xml)
         assertTrue("domain-config" !in xml)
+    }
+}
+
+class AccountCopyTest {
+    private val recoverAt = 1_800_000_000_000L
+    private val dateText = com.tianting.sdk.sessionDialogText(com.tianting.sdk.SessionDialog.RECOVER_BEFORE, recoverAt)!!
+
+    @Test fun session_fatal_uses_dialog_not_close_code() { // K7、AC-ACC-03-26：Session 继承 Closed，分支要在前面
+        fun f(dialog: com.tianting.sdk.SessionDialog?, code: Int? = 4019, recoverBefore: Long? = null) =
+            fatalText(com.tianting.sdk.FatalReason.Session(com.tianting.sdk.SessionEnd(com.tianting.sdk.SessionEndAction.LOGIN, dialog, recoverBefore, null, code)))
+        assertEquals("检测到登录凭证异常，这台设备已下线。如果不是你本人操作，请尽快改密码", f(com.tianting.sdk.SessionDialog.CREDENTIAL_ANOMALY))
+        assertEquals(dateText, f(com.tianting.sdk.SessionDialog.RECOVER_BEFORE, recoverBefore = recoverAt))
+        assertEquals("登录已失效，请重新登录", f(com.tianting.sdk.SessionDialog.SESSION_EXPIRED))
+        assertEquals("恢复码已更新，请重新登录查看", f(com.tianting.sdk.SessionDialog.RECOVERY_CODE_STALE, code = 4000))
+        assertEquals("登录已失效，请重新登录", f(null, code = null)) // 没登录过的 K7
+    }
+
+    @Test fun session_fatal_other_actions() {
+        assertEquals("账号已被封禁", fatalText(com.tianting.sdk.FatalReason.Session(com.tianting.sdk.SessionEnd(com.tianting.sdk.SessionEndAction.BAN_NOTICE, code = 4034))))
+        assertEquals(ACCOUNT_DELETION_REQUESTED, fatalText(com.tianting.sdk.FatalReason.Session(com.tianting.sdk.SessionEnd(com.tianting.sdk.SessionEndAction.LOGIN, reason = "accountDeleted"))))
+    }
+
+    @Test fun kick_with_date_shows_date_without_date_shows_old_copy() { // AC-ACC-04-5、F-ACC-03 规则 6a
+        assertEquals(dateText, fatalText(com.tianting.sdk.FatalReason.Kicked("passwordChanged", 4012, recoverBefore = recoverAt)))
+        assertEquals(dateText, fatalText(com.tianting.sdk.FatalReason.Kicked("somethingNew", 4012, recoverBefore = recoverAt)))
+        assertEquals("账号已被下线", fatalText(com.tianting.sdk.FatalReason.Kicked("passwordChanged", 4012)))
+        assertEquals("账号已被下线", fatalText(com.tianting.sdk.FatalReason.Closed(4012, "x")))
+        assertEquals("账号已被封禁", fatalText(com.tianting.sdk.FatalReason.Kicked("suspended", 4012, recoverBefore = recoverAt)))
+    }
+
+    @Test fun too_many_attempts_rounds_up() { // AC-ACC-02-9
+        assertEquals("尝试次数过多，请 10 分钟后再试", tooManyAttemptsText(600))
+        assertEquals("尝试次数过多，请 11 分钟后再试", tooManyAttemptsText(601))
+        assertEquals("尝试次数过多，请 1 分钟后再试", tooManyAttemptsText(1))
+        assertEquals("尝试次数过多，请 1 分钟后再试", tooManyAttemptsText(null))
+    }
+
+    @Test fun account_errors_never_show_server_msg() { // F-UI-19
+        val e = com.tianting.sdk.AccountError(400, 4999, "ZXQ-SERVER-MSG")
+        assertEquals("请求出错", accountErrorText(e, AccountPage.LOGIN))
+        assertEquals("网络异常，请稍后重试", accountErrorText(com.tianting.sdk.AccountNetworkError("status 502"), AccountPage.LOGIN))
+        assertEquals("网络异常，请稍后重试", accountErrorText(com.tianting.sdk.AccountTimeoutError(), AccountPage.REGISTER))
+        assertEquals("登录已失效，请重新登录", accountErrorText(com.tianting.sdk.SessionEndedError(), AccountPage.PASSWORD_CONFIRM))
+    }
+
+    @Test fun error_4018_depends_on_page() {
+        val e = com.tianting.sdk.AccountError(401, 4018, "x")
+        assertEquals("用户名或密码错误", accountErrorText(e, AccountPage.LOGIN))
+        assertEquals("用户名或恢复码错误", accountErrorText(e, AccountPage.RECOVER))
+        assertEquals("密码错误", accountErrorText(e, AccountPage.PASSWORD_CONFIRM))
+    }
+
+    @Test fun unknown_event_kind_is_not_shown_raw() {
+        assertEquals("账号安全事件", accountEventText("futureKind"))
+        assertEquals("新设备登录", accountEventText("newDeviceLogin"))
+    }
+
+    @Test fun account_routes_are_known() {
+        for (p in listOf("/me/nickname", "/me/settings/security", "/me/settings/security/password", "/me/settings/security/recovery", "/me/settings/security/others", "/me/settings/privacy-notice")) assertEquals(p, safeRoute(p))
     }
 }

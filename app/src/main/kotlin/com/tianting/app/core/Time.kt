@@ -39,3 +39,9 @@ const val DIVIDER_GAP_MS = 5 * 60 * 1000L
 
 /** 第 i 条消息前是否显示时间分隔：第一条显示；与上一条间隔超过 5 分钟显示。 */
 fun needsDivider(prevTs: Long?, ts: Long): Boolean = prevTs == null || ts - prevTs > DIVIDER_GAP_MS
+
+/** 只有日期，写法和 sessionDialogText 的找回截止日期相同（yyyy/M/d）。 */
+fun formatDate(ts: Long, tz: TimeZone = TimeZone.getDefault()): String {
+    val d = cal(ts, tz)
+    return "${d.get(Calendar.YEAR)}/${d.get(Calendar.MONTH) + 1}/${d.get(Calendar.DAY_OF_MONTH)}"
+}

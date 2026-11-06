@@ -154,7 +154,7 @@ fun GroupsPage() {
     }
 }
 
-/** 我（PRD-ui F-UI-15）：一期不提供资料编辑。显示名来自 users 缓存里的自己。 */
+/** 我（PRD-ui F-UI-15）。显示名来自 users 缓存里的自己。 */
 @Composable
 fun MePage() {
     val im = LocalIm.current
@@ -208,6 +208,10 @@ fun SettingsPage() {
                 TtRow { T("关于天听") }
                 TtRow { T("版本 ${com.tianting.app.BuildConfig.VERSION_NAME}（构建 ${com.tianting.app.BuildConfig.BUILD_ID}）", Modifier.tag("app-version"), style = Tt.type.small, color = Tt.colors.textSecondary) }
                 TtRow { T("图标：Lucide（ISC 许可）", style = Tt.type.small, color = Tt.colors.textSecondary) }
+                // 已登录时拉配置失败用上次缓存的值，从未成功过就隐藏（F-ACC-07 规则 4）。
+                if (!app.cachedConfig?.privacyNotice?.url.isNullOrEmpty()) {
+                    TtRow(tag = "settings-privacy-notice", onClick = { nav.go("/me/settings/privacy-notice") }) { T("隐私说明") }
+                }
             }
             Spacer(Modifier.height(12.dp))
             TtRow(tag = "logout", onClick = { confirm = true }) {

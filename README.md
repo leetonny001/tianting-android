@@ -15,7 +15,7 @@
 
 | 路径 | 内容 |
 |---|---|
-| `app/src/main/kotlin/.../core/` | 不含界面的部分：`AppModel`（App 级状态、登录生命周期）、`ImSession`（把 SDK 的 Flow 变成 Compose state）、`Navigator` / `Routes`（路径与 tianting-web 一一对应、deep link 校验）、`Errors`（文案表）、`SessionStore`（Keystore 加密 token）、`UiPrefs`（只有 `ui.` 键）、`Notices`（系统通知的列表、横幅、未查看）、`LoginApi` |
+| `app/src/main/kotlin/.../core/` | 不含界面的部分：`AppModel`（App 级状态、登录生命周期）、`ImSession`（把 SDK 的 Flow 变成 Compose state）、`Navigator` / `Routes`（路径与 tianting-web 一一对应、deep link 校验）、`Errors`（文案表）、`SessionStore`（Keystore 加密的会话和"待退出"，实现 SDK 的接口）、`UiPrefs`（只有 `ui.` 键）、`Notices`（系统通知的列表、横幅、未查看）、`LoginApi` |
 | `.../ui/AppRoot.kt` | 根组合：主题、路由表、被踢弹窗、轻提示 |
 | `.../ui/Components.kt` | 顶栏、头像、按钮、输入框、弹窗等；`data-*` 对应的 semantics key |
 | `.../ui/pages/` | 全部页面。`testTag` 与 web 的 `data-testid` 同名 |
@@ -35,6 +35,7 @@ export ANDROID_HOME=~/Library/Android/sdk
 ./gradlew :app:checkTianting :app:lintDebug :app:testDebugUnitTest   # 代码规则、Lint、单元测试（不需要设备）
 scripts/run-tests.sh ui                # 模拟器：Compose UI Test（假服务端）
 scripts/run-tests.sh e2e               # 模拟器 + 真实 im-server（自动编译、启动、关闭，需要 Go 和服务端源码）
+scripts/run-tests.sh kill              # 模拟器 + 真实 im-server：真实杀进程的场景，每个场景两次 am instrument
 scripts/run-tests.sh shots             # 截图巡检（浅色、深色），PNG 在 shots/
 scripts/release-logcat-check.sh        # release 的 R8 构建真实收发后，设备日志搜不到特征串和 token
 scripts/push-logcat-check.sh           # 同上，真实收一条系统通知
@@ -43,7 +44,7 @@ python3 -I tools/ac_coverage/coverage.py ../tianting-server/docs/prd/PRD-ui-v1.0
 
 连本地服务端：debug 构建默认连 `http://10.0.2.2:18280`（`-Ptianting.devServer=…` 可改），`scripts/test-server.sh start` 在这个端口起测试服务端（密钥每次随机，不进仓库）。
 
-`release` 构建：`-Ptianting.serverUrl=https://…` 指定服务端，`-Ptianting.demoLogin=true` 打开演示登录（默认关闭，登录页只显示"请从业务方入口进入天听"）；明文流量全部禁用。
+`release` 构建：`-Ptianting.serverUrl=https://…` 指定服务端，`-Ptianting.demoLogin=true` 打开演示登录的构建开关（默认关闭；和服务端 `GET /v1/config` 的 `demoLogin` 同时为真才显示演示表单，否则只有账号登录）；明文流量全部禁用。
 
 深链接：`tianting://chat/{convId}`（convId 百分号编码）等，只接受路由表里的路径，其余进 `/chats`；未登录时先登录再进入。
 

@@ -37,7 +37,9 @@ import com.tianting.app.ui.pages.LoginPage
 import com.tianting.app.ui.pages.MePage
 import com.tianting.app.ui.pages.NoticeBannerHost
 import com.tianting.app.ui.pages.NoticesPage
+import com.tianting.app.ui.pages.PrivacyNoticePage
 import com.tianting.app.ui.pages.PrivacyPage
+import com.tianting.app.ui.pages.RecoveryPage
 import com.tianting.app.ui.pages.RemarkPage
 import com.tianting.app.ui.pages.RequestsPage
 import com.tianting.app.ui.pages.SettingsPage
@@ -56,18 +58,23 @@ fun AppRoot(model: AppModel) {
     TiantingTheme(resolveDark(model.themePref)) {
         CompositionLocalProvider(LocalApp provides model, LocalNav provides model.nav) {
             // 根背景用 surface：状态栏、导航条区域和顶栏、标签栏连成一片。
-            Box(Modifier.fillMaxSize().background(if (model.im == null) Tt.colors.bg else Tt.colors.surface).semantics { testTagsAsResourceId = true }) {
+            Box(Modifier.fillMaxSize().background(if (model.im == null && !model.authTopBar && model.recovery == null) Tt.colors.bg else Tt.colors.surface).semantics { testTagsAsResourceId = true }) {
                 Box(Modifier.fillMaxSize().safeDrawingPadding()) {
                     val im = model.im
-                    if (im == null) {
+                    val recovery = model.recovery
+                    if (recovery != null) {
+                        RecoveryPage(recovery) // 确认前进不了其他页面（AC-ACC-01-12）
+                    } else if (im == null) {
                         LoginPage()
                     } else {
                         CompositionLocalProvider(LocalIm provides im) {
                             Pages(model.nav)
                             NoticeBannerHost(im, model.nav)
-                            KickedDialog(im, model)
                         }
                     }
+                    if (im != null) KickedDialog(im, model)
+                    SessionEndedDialog(model)
+                    if (recovery == null && im != null) PrivacyUpdateDialog(model)
                     ToastHost(model.toast)
                 }
             }
@@ -101,6 +108,7 @@ private fun Route(entry: Navigator.Entry) {
         entry.path == "/me/settings/blocks" -> BlocksPage()
         entry.path == "/me/settings/privacy" -> PrivacyPage()
         entry.path == "/me/settings/appearance" -> AppearancePage()
+        entry.path == "/me/settings/privacy-notice" -> PrivacyNoticePage(LocalApp.current.cachedConfig?.privacyNotice?.url) { nav.back() }
         seg[0] == "contacts" && seg.getOrNull(1) == "apply" && seg.size == 3 -> ApplyPage(decodeParam(seg[2]), entry.state)
         seg[0] == "user" && seg.size == 2 -> UserPage(decodeParam(seg[1]), entry.state)
         seg[0] == "user" && seg.size == 3 && seg[2] == "remark" -> RemarkPage(decodeParam(seg[1]))
@@ -134,4 +142,33 @@ private fun KickedDialog(im: ImSession, model: AppModel) {
         dismissible = false,
         confirm = { TextButton({ model.logout(keepNoticeSeen = true) }, Modifier.tag("kicked-ok")) { T("确定", color = Tt.colors.brand) } },
     ) { T(fatalText(fatal)) }
+}
+
+/** 还没有连接时会话结束（登录页、确认前的保存页）：同样只有"确定"（F-ACC-03 规则 6、6a）。 */
+@Composable
+private fun SessionEndedDialog(model: AppModel) {
+    val text = model.endedText ?: return
+    TtDialog(
+        tag = "kicked-dialog",
+        onDismiss = {},
+        dismissible = false,
+        confirm = { TextButton({ model.dismissEnded() }, Modifier.tag("kicked-ok")) { T("确定", color = Tt.colors.brand) } },
+    ) { T(text) }
+}
+
+/** 隐私说明版本更新（F-ACC-10 规则 2，AC-ACC-10-3）：提示一次，不强制。 */
+@Composable
+private fun PrivacyUpdateDialog(model: AppModel) {
+    if (model.privacyUpdate == null) return
+    TtDialog(
+        tag = "privacy-update",
+        onDismiss = { model.dismissPrivacyUpdate() },
+        confirm = {
+            TextButton({
+                model.confirmPrivacyUpdate()
+                model.nav.go("/me/settings/privacy-notice")
+            }, Modifier.tag("privacy-update-view")) { T("查看", color = Tt.colors.brand) }
+        },
+        dismiss = { TextButton({ model.confirmPrivacyUpdate() }, Modifier.tag("privacy-update-ok")) { T("知道了", color = Tt.colors.textSecondary) } },
+    ) { T("隐私说明已更新") }
 }

@@ -243,7 +243,7 @@ class SocialTest : UiTest() {
         rule.waitText("有 2 条消息未发送，退出后将丢失")
         click("logout-dialog-ok")
         rule.waitTag("login-username")
-        assertEquals(null, sessions.session) // AC-UI-16-3：token 存储里没有 token
+        waitFor("token 清除") { sessions.session == null } // AC-UI-16-3：token 存储里没有 token
     }
 
     @Test fun search_results_by_relation() { // AC-UI-26-1、26-3、26-4、26-5、26-6、26-7
@@ -453,7 +453,7 @@ class SocialTest : UiTest() {
         txt("登录设备过多，当前设备已下线").assertExists()
         click("kicked-ok")
         rule.waitTag("login-username")
-        assertEquals(null, sessions.session)
+        waitFor("token 清除") { sessions.session == null }
     }
 
     @Test fun kicked_suspended_texts() { // AC-UI-43-3、43-4

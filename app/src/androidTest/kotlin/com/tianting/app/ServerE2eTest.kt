@@ -118,7 +118,7 @@ class ServerE2eTest {
     }
 
     private fun appLogin(u: String, nick: String = "") {
-        inst.runOnMainSync { testApp.model = AppModel(testContext, defaultDeps(testContext)) }
+        replaceWithRealDeps()
         scenario = androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java)
         rule.waitUntil(5000) { rule.onAllNodesWithTag("login-username", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         rule.onNodeWithTag("login-username", useUnmergedTree = true).performTextReplacement(u)
@@ -298,7 +298,7 @@ class ServerE2eTest {
         waitTag("kicked-dialog")
         rule.onNodeWithTag("kicked-ok", useUnmergedTree = true).performClick()
         waitTag("login-username")
-        assertEquals(null, KeystoreSessionStore(testContext).load())
+        rule.waitUntil(5000) { runBlocking { KeystoreSessionStore(testContext).load() } == null }
         rule.onNodeWithTag("login-username", useUnmergedTree = true).performTextReplacement(a)
         rule.onNodeWithTag("login-submit", useUnmergedTree = true).performClick()
         waitTag("login-error")
@@ -439,7 +439,7 @@ class ServerE2eTest {
         val old = model
         inst.runOnMainSync { old.im?.stop() }
         runBlocking { old.im?.client?.close() }
-        inst.runOnMainSync { testApp.model = AppModel(testContext, defaultDeps(testContext)) }
+        replaceWithRealDeps()
         scenario = androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java)
         waitTag("tab-chats", 15_000)
         rule.waitUntil(10_000) { model.im?.state == ConnState.CONNECTED }
@@ -513,7 +513,7 @@ class ServerE2eTest {
         val texts = (1..3).map { "离线补收$it-${uid("y")}" }
         texts.forEach { pushNotice(u, it) }
         Thread.sleep(5) // T0 严格晚于这些推送
-        inst.runOnMainSync { testApp.model = AppModel(testContext, defaultDeps(testContext)) }
+        replaceWithRealDeps()
         scenario = androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java)
         waitTag("tab-chats", 15_000)
         open("/me")
@@ -566,6 +566,6 @@ class ServerE2eTest {
 
     /** 从 Keystore 会话存储里读当前 token，只在断言里用，不打印。 */
     private object SessionLike {
-        fun tokenOf(c: android.content.Context): String = KeystoreSessionStore(c.applicationContext).load()?.token.orEmpty()
+        fun tokenOf(c: android.content.Context): String = runBlocking { KeystoreSessionStore(c.applicationContext).load() }?.accessToken.orEmpty()
     }
 }

@@ -26,6 +26,7 @@ val ROUTE_PATTERNS = listOf(
     "/me/settings/blocks",
     "/me/settings/privacy",
     "/me/settings/appearance",
+    "/me/settings/privacy-notice",
 )
 
 private fun matches(pattern: String, path: String): Boolean {

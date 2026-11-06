@@ -28,5 +28,14 @@ class UiPrefs(context: Context) : NoticePrefs {
     companion object {
         const val FILE = "tianting_ui"
         const val THEME = "ui.theme"
+
+        /** GET /v1/config 上次成功的结果：已登录时拉取失败用它（F-ACC-07 规则 4）。不含账号数据和密钥。 */
+        const val CONFIG = "ui.config"
+
+        /** 这台设备确认过的隐私说明版本（F-ACC-10 规则 2）。 */
+        const val PRIVACY_VERSION = "ui.privacyVersion"
+
+        /** 退出登录时本地库还没清完（等 logout 响应）。只有一个标记，没有账号数据。 */
+        const val WIPE_PENDING = "ui.wipePending"
     }
 }
