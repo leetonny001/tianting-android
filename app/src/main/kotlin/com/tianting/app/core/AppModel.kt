@@ -37,9 +37,11 @@ import com.tianting.sdk.android.bindNetwork
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -154,6 +156,7 @@ class AppModel(context: Context, val deps: AppDeps) {
     private val prefs = UiPrefs(appContext)
     private val collator by lazy { deps.collator() }
     private var teardown: Job? = null
+    private var closingClient: Deferred<Unit>? = null // 退出后还没关的旧客户端。只运行一次，新会话开始之前要关（它清的本地库和新会话共用）
     private var accountNetwork: Closeable? = null
     private var lastAckAt = 0L
 
@@ -177,6 +180,7 @@ class AppModel(context: Context, val deps: AppDeps) {
     /** 隐私说明版本更新，这次登录要提示（F-ACC-10 规则 2）。 */
     var privacyUpdate by mutableStateOf<String?>(null)
         private set
+    private var privacyUpdateUser: String? = null
 
     /** 登录流程里当前页有顶栏（注册、找回、隐私说明）。只影响根背景。 */
     var authTopBar by mutableStateOf(false)
@@ -189,6 +193,7 @@ class AppModel(context: Context, val deps: AppDeps) {
         private set
 
     init {
+        prefs.remove(UiPrefs.LEGACY_PRIVACY_VERSION)
         accountNetwork = deps.bindAccountNetwork(account)
         // 先开始收集再 start：events 没有回放，启动时刷新可能立刻结束会话。
         scope.launch(start = CoroutineStart.UNDISPATCHED) { account.events.collect { onAccountEvent(it) } }
@@ -264,10 +269,10 @@ class AppModel(context: Context, val deps: AppDeps) {
         val route = pendingRoute
         pendingRoute = null
         scope.launch {
-            teardown?.join()
+            closingClient?.await()
             val saved = AccountSession(mode = SessionMode.DEMO, userId = s.userId, accessToken = s.token)
+            account.restore(saved) // 先于落盘：进行中的 logout 由此知道有了新会话，不再清存储
             deps.sessions.save(saved)
-            account.restore(saved)
             begin()
             nav.resetTo(route)
         }
@@ -275,14 +280,14 @@ class AppModel(context: Context, val deps: AppDeps) {
 
     /**
      * 账号登录、注册、找回。放在 App 的 scope：页面没了也要把恢复码接住。
-     * 先等上一次退出结束：SDK 的 logout 最后会结束当前会话，退出进行中登录的话，新会话也会被结束。
+     * 不等上一次退出的响应（断网时最长 30 秒）：SDK 的 logout 只结束它开始时的会话（问题 A1）。旧客户端先关掉，它还绑着 token，又和新会话共用本地库。
      */
     fun authenticate(kind: AuthKind, onFailed: (Throwable) -> Unit, op: suspend (AccountClient) -> AuthResult) {
         scope.launch {
             try {
-                teardown?.join()
+                closingClient?.await()
                 val r = op(account)
-                if (kind == AuthKind.REGISTER) markPrivacySeen()
+                if (kind == AuthKind.REGISTER) markPrivacySeen(r.userId)
                 val code = r.recoveryCode
                 val gen = r.recoveryCodeGen
                 if (code != null && gen != null) {
@@ -290,7 +295,7 @@ class AppModel(context: Context, val deps: AppDeps) {
                 } else {
                     enterApp()
                 }
-                if (kind != AuthKind.REGISTER) checkPrivacyVersion()
+                if (kind != AuthKind.REGISTER) checkPrivacyVersion(r.userId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -375,7 +380,7 @@ class AppModel(context: Context, val deps: AppDeps) {
 
     /**
      * 退出登录（F-AUTH-05、F-ACC-04 规则 1）：界面先回登录页，不等 logout 的响应（断网时最长等 30 秒，K2）。
-     * SDK 按顺序做：先写待退出、清 token，发 logout，收到响应或超时后再由这里以 1000 关闭、清内存和本地库。
+     * SDK 按顺序做：先写待退出、清 token，发 logout，收到响应或超时后再由这里以 1000 关闭、清内存和本地库；响应回来之前又登录时，登录前就关。
      * ui.* 偏好保留，只有 ui.noticeSeen 这个账号的键删除。被踢、凭证失效时 keepNoticeSeen=true：重新登录后不重复提醒（PRD-live F-PUSH-12 规则 5）。
      * 推送游标不在本地库，都不清（4.9 节）。
      */
@@ -390,42 +395,49 @@ class AppModel(context: Context, val deps: AppDeps) {
         nav.resetTo(null)
         session?.stop()
         if (session != null) prefs.set(UiPrefs.WIPE_PENDING, "1")
+        val closing = session?.let { closeLater(it.client) }
+        if (closing != null) closingClient = closing
         val previous = teardown
         teardown = scope.launch {
-            previous?.join()
             runCatching { account.logout() }
-            if (session != null) {
-                runCatching { session.client.disconnect() }
-                runCatching { session.client.close() }
-                prefs.remove(UiPrefs.WIPE_PENDING)
-            }
+            closing?.await()
+            previous?.join()
         }
+    }
+
+    /** 以 1000 关闭、清本地库。不会自己开始；await 多次也只运行一次。 */
+    private fun closeLater(client: IMClient): Deferred<Unit> = scope.async(start = CoroutineStart.LAZY) {
+        runCatching { client.disconnect() }
+        runCatching { client.close() }
+        prefs.remove(UiPrefs.WIPE_PENDING)
     }
 
     /** 等 logout 响应时（最长 30 秒）被杀：token 已经清了，本地库还没清。下次启动没有会话时补上，否则缓存要留到下次登录。 */
     private fun finishInterruptedWipe() {
         if (prefs.get(UiPrefs.WIPE_PENDING) == null) return
-        val client = deps.newClient { foreground }
-        teardown = scope.launch {
-            runCatching { client.disconnect() }
-            runCatching { client.close() }
-            prefs.remove(UiPrefs.WIPE_PENDING)
+        val closing = closeLater(deps.newClient { foreground })
+        closingClient = closing
+        teardown = scope.launch { closing.await() }
+    }
+
+    /** 这次登录要不要提示隐私说明版本更新。服务端没有记录确认的接口（问题单），确认按账号记在本机，和 H5、iOS 相同。 */
+    private fun checkPrivacyVersion(userId: String) {
+        val version = (config as? ConfigState.Loaded)?.config?.privacyNotice?.version ?: return
+        if (prefs.get(privacyAckKey(userId)) != version) {
+            privacyUpdateUser = userId
+            privacyUpdate = version
         }
     }
 
-    /** 这次登录要不要提示隐私说明版本更新。服务端没有记录确认的接口（问题单），确认记在本机。 */
-    private fun checkPrivacyVersion() {
-        val version = (config as? ConfigState.Loaded)?.config?.privacyNotice?.version ?: return
-        if (prefs.get(UiPrefs.PRIVACY_VERSION) != version) privacyUpdate = version
-    }
-
-    private fun markPrivacySeen() {
-        (config as? ConfigState.Loaded)?.config?.privacyNotice?.version?.let { prefs.set(UiPrefs.PRIVACY_VERSION, it) }
+    private fun markPrivacySeen(userId: String) {
+        (config as? ConfigState.Loaded)?.config?.privacyNotice?.version?.let { prefs.set(privacyAckKey(userId), it) }
     }
 
     /** 提示框点了确认。没点（返回键关掉）就是没确认，下次登录再提示；第一批不做强制。 */
     fun confirmPrivacyUpdate() {
-        privacyUpdate?.let { prefs.set(UiPrefs.PRIVACY_VERSION, it) }
+        val user = privacyUpdateUser
+        val version = privacyUpdate
+        if (user != null && version != null) prefs.set(privacyAckKey(user), version)
         privacyUpdate = null
     }
 

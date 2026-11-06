@@ -324,25 +324,65 @@ class SessionUiTest : UiTest() {
         waitFor("清除") { pending.items.isEmpty() }
     }
 
-    @Test fun login_waits_for_logout_in_flight() { // SDK 的 logout 最后结束当前会话，先登录的话新会话也被结束（问题单）：App 串行
+    @Test fun login_works_at_once_while_logout_is_in_flight() { // 问题表 A1：logout 只结束它开始时的会话，登录不用等它的响应
+        http.handlers["/v1/account/logout"] = { Reply.Hold }
+        openConnected()
+        val oldToken = sessions.session!!.accessToken
+        val oldRefresh = sessions.session!!.refreshToken
+        go("/me/settings")
+        click("logout")
+        click("logout-dialog-ok")
+        rule.waitTag("account-username")
+        waitFor("退出请求已发出") { http.to("/v1/account/logout").size == 1 }
+        val oldConnections = server.connections.size
+        type("account-username", "alice")
+        type("account-password", "Good-pass-1")
+        click("account-submit")
+        waitFor("不等 logout 就登录", 3_000) { http.to("/v1/account/login").size == 1 }
+        rule.waitTag("tab-chats")
+        waitFor("新会话落盘") { sessions.session != null }
+        val newToken = sessions.session!!.accessToken
+        assertNotEquals(oldToken, newToken)
+        waitConnected()
+        waitFor("新连接") { server.connections.size > oldConnections }
+        // 旧 logout 现在才回：不影响新会话，没有弹窗，没有回登录页。
+        http.handlers.remove("/v1/account/logout")
+        http.release("/v1/account/logout")
+        waitFor("待退出清掉") { pending.items.isEmpty() }
+        assertNeverWithin(1_000, "新会话被结束") { rule.hasTag("account-username") || rule.hasTag("kicked-dialog") }
+        assertEquals(newToken, sessions.session?.accessToken)
+        assertEquals(newToken, model.account.session.value?.accessToken)
+        assertEquals(oldRefresh, http.to("/v1/account/logout")[0].body["refreshToken"]?.jsonPrimitive?.content)
+        waitConnected()
+    }
+
+    @Test fun demo_login_works_at_once_while_logout_is_in_flight() { // 问题表 A1，演示登录同样不等
         http.handlers["/v1/account/logout"] = { Reply.Hold }
         openConnected()
         go("/me/settings")
         click("logout")
         click("logout-dialog-ok")
         rule.waitTag("account-username")
-        type("account-username", "alice")
-        type("account-password", "Good-pass-1")
-        http.requests.clear()
-        click("account-submit")
-        assertNeverWithin(500, "logout 没结束就登录") { http.to("/v1/account/login").isNotEmpty() }
+        waitFor("退出请求已发出") { http.to("/v1/account/logout").size == 1 }
+        inst.runOnMainSync { model.onLoggedIn(com.tianting.app.core.Session("alice", "demo-token")) }
+        rule.waitTag("tab-chats")
         http.handlers.remove("/v1/account/logout")
         http.release("/v1/account/logout")
-        rule.waitTag("tab-chats")
-        waitFor("新会话落盘") { sessions.session != null }
-        waitConnected()
-        assertFalse(rule.hasTag("kicked-dialog"))
-        assertEquals(1, http.to("/v1/account/login").size)
+        assertNeverWithin(1_000, "演示会话被结束") { rule.hasTag("account-username") }
+        assertEquals("demo-token", model.account.session.value?.accessToken)
+        assertEquals("demo-token", sessions.session?.accessToken)
+    }
+
+    @Test fun security_notice_other_kinds_toast_and_unknown_is_silent() { // AC-ACC-03-25、AC-ACC-03-45、F-ACC-05 规则 5
+        openConnected()
+        server.pushEvent("securityNotice", "kind" to "futureKind", "at" to 1L, "platform" to "android")
+        assertNeverWithin(500, "不认识的 kind") { rule.hasTag("toast") }
+        server.pushEvent("securityNotice", "kind" to "recoveryCodeRegenerated", "at" to 1L, "platform" to "android")
+        rule.waitText("你的恢复码已重新生成")
+        server.pushEvent("securityNotice", "kind" to "refreshReplay", "at" to 1L, "platform" to "android")
+        rule.waitText("检测到你的账号登录凭证异常")
+        server.pushEvent("securityNotice", "kind" to "refreshRateLimited", "at" to 1L, "platform" to "android")
+        rule.waitText("你的账号登录凭证刷新过于频繁")
     }
 
     @Test fun demo_logout_sends_nothing_and_clears() { // F-AUTH-05 不变：演示会话没有 /v1/account/logout

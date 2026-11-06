@@ -127,7 +127,19 @@ fun fatalText(r: FatalReason): String {
 
 const val ACCOUNT_DELETION_REQUESTED = "已申请注销账号。7 天内可以用密码登录并撤销"
 const val RECOVERY_LOST_WARNING = "恢复码丢失后账号无法找回"
-const val SECURITY_NOTICE_NEW_DEVICE = "你的账号在新设备登录"
+
+/**
+ * securityNotice 的提示。新设备登录的文案来自 PRD（AC-ACC-02-13），其他三个是实现时加的，待确认（问题表）。
+ * SDK 已经滤掉不认识的 kind，这里返回 null 再防一层：内部的值不给用户看。
+ */
+fun securityNoticeText(kind: String): String? = when (kind) {
+    "newDeviceLogin" -> "你的账号在新设备登录"
+    "recoveryCodeRegenerated" -> "你的恢复码已重新生成"
+    "refreshReplay" -> "检测到你的账号登录凭证异常"
+    "refreshRateLimited" -> "你的账号登录凭证刷新过于频繁"
+    else -> null
+}
+
 const val PRIVACY_LOAD_FAILED = "暂时打不开，请稍后重试"
 const val NETWORK_ERROR_TEXT = "网络异常，请稍后重试"
 

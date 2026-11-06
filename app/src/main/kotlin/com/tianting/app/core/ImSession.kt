@@ -142,7 +142,7 @@ class ImSession(
                     is IMEvent.SendFailed -> onSendFailed(e)
                     is IMEvent.MuteChanged -> muteTick++
                     is IMEvent.ConvRemoved -> removedTick++
-                    is IMEvent.SecurityNotice -> toast(SECURITY_NOTICE_NEW_DEVICE) // 这一批 SDK 只发 newDeviceLogin（AC-ACC-02-13）
+                    is IMEvent.SecurityNotice -> securityNoticeText(e.kind)?.let(toast) // AC-ACC-02-13、AC-ACC-03-25、AC-ACC-03-45
                     is IMEvent.RecoveryCodeUnacked -> onRecoveryCodeUnacked()
                     is IMEvent.ProfileChanged -> fetchProfiles(listOf(e.userId)) // SDK 已经更新缓存，这里取到的就是新昵称（AC-ACC-06-5）
                     else -> Unit

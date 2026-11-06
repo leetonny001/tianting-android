@@ -19,8 +19,10 @@ import com.tianting.app.core.messageFor
 import com.tianting.app.core.mutedText
 import com.tianting.app.core.needsDivider
 import com.tianting.app.core.parseLoginResponse
+import com.tianting.app.core.privacyAckKey
 import com.tianting.app.core.routeFromDeepLink
 import com.tianting.app.core.safeRoute
+import com.tianting.app.core.securityNoticeText
 import com.tianting.app.ui.avatarImageUrl
 import com.tianting.app.ui.badgeText
 import com.tianting.app.ui.pages.ChatRow
@@ -41,6 +43,9 @@ import java.io.File
 import java.util.Calendar
 import java.util.TimeZone
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RoutesTest {
@@ -325,6 +330,21 @@ class AccountCopyTest {
     @Test fun unknown_event_kind_is_not_shown_raw() {
         assertEquals("账号安全事件", accountEventText("futureKind"))
         assertEquals("新设备登录", accountEventText("newDeviceLogin"))
+    }
+
+    @Test fun security_notice_text_per_kind_unknown_shows_nothing() { // AC-ACC-02-13、AC-ACC-03-25、AC-ACC-03-45
+        assertEquals("你的账号在新设备登录", securityNoticeText("newDeviceLogin"))
+        assertEquals("你的恢复码已重新生成", securityNoticeText("recoveryCodeRegenerated"))
+        assertEquals("检测到你的账号登录凭证异常", securityNoticeText("refreshReplay"))
+        assertEquals("你的账号登录凭证刷新过于频繁", securityNoticeText("refreshRateLimited"))
+        assertNull(securityNoticeText("futureKind"))
+    }
+
+    @Test fun privacy_ack_key_is_per_account_and_hides_the_username() { // F-ACC-10 规则 2，问题表 A2
+        assertEquals(privacyAckKey("alice"), privacyAckKey("alice"))
+        assertNotEquals(privacyAckKey("alice"), privacyAckKey("bob"))
+        assertTrue(privacyAckKey("alice").startsWith("ui.privacyAck."))
+        assertFalse("alice" in privacyAckKey("alice"))
     }
 
     @Test fun account_routes_are_known() {

@@ -13,6 +13,7 @@ import com.tianting.app.FakeAccountHttp.Reply
 import com.tianting.app.core.LoginResult
 import com.tianting.app.core.Session
 import com.tianting.app.core.LoginApi
+import com.tianting.app.core.UiPrefs
 import com.tianting.app.ui.DataStatus
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Before
@@ -556,6 +557,28 @@ class AccountUiTest : UiTest() {
         fillLogin()
         click("account-submit")
         rule.waitTag("privacy-update")
+    }
+
+    @Test fun tc_acc_10_03_confirmation_is_per_account() { // 问题表 A2：同一台设备换账号要再提示，和 H5、iOS 相同
+        http.privacy = obj("version" to "v2", "url" to "https://invalid.invalid/p")
+        openLogin()
+        fillLogin()
+        click("account-submit")
+        rule.waitTag("privacy-update")
+        click("privacy-update-ok")
+        rule.waitGoneTag("privacy-update")
+        inst.runOnMainSync { model.logout() }
+        rule.waitTag("account-username")
+        val first = http.user
+        http.user = "bobby_1"
+        fillLogin()
+        click("account-submit")
+        rule.waitTag("privacy-update")
+        click("privacy-update-ok")
+        rule.waitGoneTag("privacy-update")
+        val keys = testContext.getSharedPreferences(UiPrefs.FILE, 0).all.keys
+        assertEquals(2, keys.count { it.startsWith("ui.privacyAck.") }, "每个账号一条")
+        assertTrue(keys.none { first in it && it.startsWith("ui.privacyAck.") }, "键里不放用户名")
     }
 
     @Test fun tc_acc_10_03_not_confirming_still_lets_you_use_the_app_and_asks_again() { // TC-ACC-10-03 预期 2：第一批不强制

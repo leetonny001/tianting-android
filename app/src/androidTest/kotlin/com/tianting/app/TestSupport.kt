@@ -333,7 +333,7 @@ class TestClock(private val on: ExecutorService, start: Long = System.currentTim
 }
 
 /** 假账号接口：记录每个请求，默认按真实服务端的形状应答，测试用 handlers 改写。回复放在单独的线程上发。 */
-class FakeAccountHttp(val user: String = "alice") : HttpTransport {
+class FakeAccountHttp(var user: String = "alice") : HttpTransport {
     class Req(val method: String, val path: String, val bearer: String?, val body: JsonObject)
 
     sealed interface Reply {
