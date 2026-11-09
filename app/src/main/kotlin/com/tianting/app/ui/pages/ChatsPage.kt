@@ -271,7 +271,7 @@ private fun StartChatDialog(onClose: () -> Unit) {
             return
         }
         scope.launch {
-            val warn = im.settings.mode == SocialMode.FRIENDS && target != im.self && im.client.relationOf(target) != Relation.FRIEND
+            val warn = im.settings.mode == SocialMode.FRIENDS && target != im.self && onMain { im.client.relationOf(target) } != Relation.FRIEND
             if (warn) warnFor = target else open(target)
         }
     }

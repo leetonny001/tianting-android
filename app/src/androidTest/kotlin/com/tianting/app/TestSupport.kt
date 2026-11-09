@@ -631,6 +631,22 @@ fun UiTest.clickText(text: String) {
     txt(text).performClick()
     rule.waitForIdle()
 }
+/**
+ * 点"发送"。输入框拿到焦点后软键盘弹出，输入栏随键盘上移，waitForIdle 不等键盘动画；动画中点击，坐标按移动前算，落在
+ * 按钮外（这台 AVD 显示软键盘，FE-620 用的那台不显示）。所以等按钮位置连续约 0.4 秒不变再点（问题 A16 调查时发现）。
+ */
+fun UiTest.clickSendWhenSettled() {
+    var last: androidx.compose.ui.geometry.Rect? = null
+    var stable = 0
+    waitFor("发送按钮停稳") {
+        val r = n("send-button").fetchSemanticsNode().boundsInWindow
+        stable = if (r == last) stable + 1 else 0
+        last = r
+        stable >= 10
+    }
+    click("send-button")
+}
+
 fun UiTest.type(tag: String, text: String) {
     rule.waitTag(tag)
     n(tag).performTextReplacement(text)
@@ -670,4 +686,34 @@ fun socialAck(ver: Long = 200, status: String? = null, friends: List<JsonObject>
 fun SemanticsNodeInteraction.assertAllTextContains(text: String) {
     val all = allText(fetchSemanticsNode())
     if (text !in all) throw AssertionError("期望包含 \"$text\"，实际 \"$all\"")
+}
+
+/**
+ * 只读本用例进程从 [since]（设备钟的毫秒，用例开始时取）起写进 Logcat 的内容（问题 A18，Frank 2026-11-09 决定）：
+ * `logcat -d -b all --pid=<本进程> -T <since>`，不清空任何缓冲区，其他用例和设备上的其他日志都不动。
+ * App 和测试在同一个进程里（instrumentation），所以本进程就是 App 的进程。
+ * 逐行读，每读一行就在最近的 8~16 KiB 里查一遍，和整段读出来再查结果一样（每个值都远小于 8 KiB）；
+ * 不把整段日志读进内存（之前 `-b all` 整段读出 OutOfMemoryError）。
+ * 返回读到的行数和出现过的 [needles] 的名字。
+ */
+class LogcatScan(val lines: Int, val found: List<String>)
+
+fun scanOwnLogcat(since: Long, needles: Map<String, String>): LogcatScan {
+    val pid = android.os.Process.myPid()
+    val t = "%d.%03d".format(since / 1000, since % 1000)
+    val pfd = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("logcat -d -b all --pid=$pid -T $t")
+    val found = linkedSetOf<String>()
+    var lines = 0
+    val window = StringBuilder()
+    android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd).bufferedReader().use { r ->
+        while (true) {
+            val line = r.readLine() ?: break
+            if (line.startsWith("--------- beginning of")) continue
+            lines += 1
+            window.append(line).append('\n')
+            if (window.length > 16 * 1024) window.delete(0, window.length - 8 * 1024)
+            for ((name, value) in needles) if (value.isNotEmpty() && value in window) found += name
+        }
+    }
+    return LogcatScan(lines, found.toList())
 }

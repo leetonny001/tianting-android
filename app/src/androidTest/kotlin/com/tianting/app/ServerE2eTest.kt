@@ -448,14 +448,9 @@ class ServerE2eTest {
     private fun meCount(): String? = rule.onAllNodesWithTag("me-notices-count", useUnmergedTree = true).fetchSemanticsNodes().firstOrNull()?.let { allText(it) }
     private fun noticeTexts() = rule.onAllNodesWithTag("notice-text", useUnmergedTree = true).fetchSemanticsNodes().map { allText(it) }
 
-    private fun logcat(): String {
-        val pfd = inst.uiAutomation.executeShellCommand("logcat -d -b all")
-        return android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd).bufferedReader().use { it.readText() }
-    }
-
     @Test fun live_notice_banner_list_and_no_token_or_data_in_logcat() { // AC-UI-44-1、AC-PUSH-01-1、AC-UI-44-2、token 和 data 不进 Logcat
-        // 先清空：模拟器开得久了，`-b all` 一次读出来会超过测试进程的内存（OutOfMemoryError，FE-620 实测）。只看这个用例产生的日志。
-        inst.uiAutomation.executeShellCommand("logcat -b all -c").close()
+        // 只读本进程从这里开始的日志，不清空缓冲区（问题 A18）：之前整段读 `-b all` 测试进程 OutOfMemoryError。
+        val since = System.currentTimeMillis()
         val u = uid("n")
         users(u)
         appLogin(u)
@@ -477,11 +472,12 @@ class ServerE2eTest {
             assertTrue(k.startsWith("ui."), k)
             assertFalse(secret in v.toString())
         }
-        val log = logcat()
-        assertFalse(secret in log, "Logcat 里有 data")
         val token = SessionLike.tokenOf(testContext)
         assertTrue(token.isNotEmpty())
-        assertFalse(token in log, "Logcat 里有 token")
+        val log = scanOwnLogcat(since, mapOf("data" to secret, "token" to token))
+        assertTrue(log.lines > 0, "读到了本进程的日志")
+        assertFalse("data" in log.found, "Logcat 里有 data")
+        assertFalse("token" in log.found, "Logcat 里有 token")
     }
 
     @Test fun restart_shows_only_new_notices_and_cursor_survives_logout_and_kick() { // AC-PUSH-12-9、AC-PUSH-03-16、AC-PUSH-12-4 的原生对应、12-6

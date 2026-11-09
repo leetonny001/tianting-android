@@ -563,7 +563,7 @@ class AccountE2eTest {
     }
 
     @Test fun secrets_never_reach_logcat() { // 第 13.1 节、NF-UI-16：debug 构建也不打 token、refresh、恢复码、密码
-        inst.uiAutomation.executeShellCommand("logcat -c").close()
+        val since = System.currentTimeMillis() // 只读本进程从这里开始的日志，不清空缓冲区（问题 A18）
         val u = newUsername()
         val secretPassword = "ZXQ-PASS-" + System.nanoTime()
         ui.openApp()
@@ -584,10 +584,12 @@ class AccountE2eTest {
         ui.waitConnected()
         rule.waitUntil(5000) { storedSession()?.accessToken != s.accessToken }
         val s2 = storedSession()!!
-        val log = android.os.ParcelFileDescriptor.AutoCloseInputStream(inst.uiAutomation.executeShellCommand("logcat -d -t 30000")).bufferedReader().readText()
-        assertTrue(log.isNotEmpty())
-        for ((name, value) in listOf("密码" to secretPassword, "恢复码" to code, "access" to s.accessToken, "refresh" to s.refreshToken!!, "新 access" to s2.accessToken, "新 refresh" to s2.refreshToken!!)) {
-            assertFalse(value in log, "$name 进了 Logcat")
+        val secrets = listOf("密码" to secretPassword, "恢复码" to code, "access" to s.accessToken, "refresh" to s.refreshToken!!, "新 access" to s2.accessToken, "新 refresh" to s2.refreshToken!!)
+        for ((name, value) in secrets) assertTrue(value.isNotEmpty(), name)
+        val log = scanOwnLogcat(since, secrets.toMap())
+        assertTrue(log.lines > 0, "读到了本进程的日志")
+        for ((name, _) in secrets) {
+            assertFalse(name in log.found, "$name 进了 Logcat")
         }
     }
 
@@ -614,10 +616,27 @@ class AccountE2eTest {
     private class CountingHttp(val path: String = "/v1/account/token/refresh", val holdMs: Long = 0) : HttpTransport {
         private val real = OkHttpHttpTransport()
         val count = java.util.concurrent.atomic.AtomicInteger()
+        /** 这些请求的响应：状态码和错误码（只取 `code`，不留响应正文，正文里有 token）。 */
+        val answers = java.util.concurrent.CopyOnWriteArrayList<String>()
         override fun request(req: HttpRequest, callback: HttpCallback): HttpCall {
             if (!req.url.endsWith(path)) return real.request(req, callback)
             count.incrementAndGet()
-            if (holdMs == 0L) return real.request(req, callback)
+            if (holdMs == 0L) {
+                return real.request(
+                    req,
+                    object : HttpCallback {
+                        override fun onResponse(response: com.tianting.sdk.HttpResponse) {
+                            val code = Regex("\"code\":(\\d+)").find(response.text)?.groupValues?.get(1)
+                            answers += if (code == null) "${response.status}" else "${response.status}/$code"
+                            callback.onResponse(response)
+                        }
+                        override fun onFailure() {
+                            answers += "failure"
+                            callback.onFailure()
+                        }
+                    },
+                )
+            }
             return real.request(
                 req,
                 object : HttpCallback {
@@ -789,12 +808,36 @@ class AccountE2eTest {
         Thread.sleep(2000)
         assertEquals(0, http.count.get(), "到上限不再刷新")
         assertEquals(ConnState.CONNECTED, model.im?.state)
-        // 模拟器的钟和服务端可能差几秒（FE-620 实测慢 4.4 秒），留 8 秒，问题 F2 的最后不足 1 秒也在外面。
+        // 模拟器的钟比 Mac（服务端）慢约 4.4 秒（FE-620 实测），这个检查点留 8 秒，按模拟器的钟算仍在上限之前。
         Thread.sleep(maxOf(0L, s.absoluteExpiresAt!! - System.currentTimeMillis() - 8000))
-        assertEquals(0, http.count.get(), "到上限之前不刷新（最后不足 1 秒见问题 F2）")
+        assertEquals(0, http.count.get(), "到上限之前不刷新")
         assertEquals(ConnState.CONNECTED, model.im?.state)
-        ui.waitTag("kicked-ok", 20_000)
-        ui.waitText("登录已失效，请重新登录")
+        // 记下之后连接状态的每次变化：到期后不能再连上（不重连）。
+        val states = java.util.concurrent.CopyOnWriteArrayList<ConnState?>()
+        val watching = java.util.concurrent.atomic.AtomicBoolean(true)
+        val watcher = Thread {
+            while (watching.get()) {
+                val now = model.im?.state
+                if (states.lastOrNull() != now) states += now
+                Thread.sleep(20)
+            }
+        }.apply { start() }
+        try {
+            ui.waitTag("kicked-ok", 20_000)
+            ui.waitText("登录已失效，请重新登录")
+            // 到期之后再等 3 秒（问题 F2 已在服务端修复）：没有成功的刷新，也没有重新连上。服务端在上限那一秒踢
+            // `tokenExpired`（JWT 的 exp 只到秒）时 App 最多问一次，服务端按到期拒绝（401 / 4019）。
+            Thread.sleep(3000)
+        } finally {
+            watching.set(false)
+            watcher.join()
+        }
+        android.util.Log.i("TC-ACC-03-45", "refresh answers ${http.answers}, states $states") // 只有状态码和错误码
+        assertTrue(http.count.get() <= 1, "到期前后最多一次被拒绝的刷新：${http.answers}")
+        assertTrue(http.answers.all { it == "401/4019" }, "刷新都被按到期拒绝：${http.answers}")
+        val firstDown = states.indexOfFirst { it != ConnState.CONNECTED }
+        assertTrue(firstDown >= 0 && states.drop(firstDown).none { it == ConnState.CONNECTED }, "到期后不重连：$states")
+        assertTrue(ui.hasTag("kicked-ok"))
         ui.tap("kicked-ok")
         ui.toAccountForm()
         rule.waitUntil(5000) { storedSession() == null }

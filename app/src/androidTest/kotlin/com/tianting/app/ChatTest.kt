@@ -27,7 +27,7 @@ class ChatTest : UiTest() {
     private fun status(text: String) = msgOf(text).fetchSemanticsNode().config[DataStatus]
     private fun sendText(text: String) {
         type("composer-input", text)
-        click("send-button")
+        clickSendWhenSettled()
     }
 
     @Test fun long_group_name_keeps_member_count() { // AC-UI-06-1
@@ -215,6 +215,10 @@ class ChatTest : UiTest() {
         waitFor("retried") { server.frames("send").size == before + 1 }
         assertEquals(id, server.frames("send").last().data["clientMsgId"])
         assertFalse(rule.hasTag("retry-dialog"))
+        // 等 SDK 里这条真的又失败了再删（问题 A16）：重发的帧发出时它是"发送中"，界面上旧的失败图标可能还没换掉，
+        // 这时点删除，removeFailed 按规则不动发送中的消息，随后失败回来，消息就留下了。
+        val clientMsgId = id!!.jsonPrimitive.content
+        waitFor("重发又失败") { model.im!!.client.messages(BOB_CONV).any { it.clientMsgId == clientMsgId && it.status == com.tianting.sdk.MessageStatus.FAILED } }
         rule.waitTag("failed-icon")
         val pending = model.im!!.pendingCount
         bubbleOf("会失败").performTouchInput { longClick() }
@@ -308,6 +312,31 @@ class ChatTest : UiTest() {
         server.pushMsg(msgJson(BOB_CONV, 61, "bob", "贴底新消息"))
         rule.waitText("贴底新消息")
         assertFalse(rule.hasTag("new-messages"))
+    }
+
+    // 问题 A16：SDK 在自己的线程（tianting-sdk）上更新消息流。界面必须在主线程收这些数据再重组、布局；之前 SDK 线程上
+    // 恢复的收集协程直接触发了快照通知，重组和 LazyColumn 的测量跑在 SDK 线程上，和主线程的绘制同时进行，偶发
+    // IndexOutOfBoundsException（区间列表为空取第 0 项）和 "performMeasureAndLayout called during measure layout"。
+    // 判据：快照的应用通知（之后就是重组和布局）不能发生在 SDK 线程上。
+    @Test fun sdk_thread_updates_reach_ui_on_main_thread() {
+        val offMain = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val observer = androidx.compose.runtime.snapshots.Snapshot.registerApplyObserver { _, _ ->
+            val t = Thread.currentThread().name
+            if (t.startsWith("tianting-sdk")) offMain += t
+        }
+        try {
+            withBob(*(1L..60L).map { msgJson(BOB_CONV, it, "bob", "第${it}条") }.toTypedArray())
+            start("tianting://chat/c2c%3Aalice%3Abob")
+            rule.waitText("第60条")
+            for (i in 61L..90L) {
+                server.pushMsg(msgJson(BOB_CONV, i, "bob", "连发$i"))
+                Thread.sleep(20)
+            }
+            rule.waitText("连发90", 10_000)
+            assertTrue(offMain.isEmpty(), "SDK 线程上触发了 ${offMain.size} 次快照通知（重组、布局跟着跑在 SDK 线程上）")
+        } finally {
+            observer.dispose()
+        }
     }
 
     @Test fun history_paging_keeps_position() { // AC-MSG-05-6

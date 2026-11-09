@@ -122,6 +122,7 @@ import com.tianting.sdk.checkText
 import com.tianting.sdk.parseConvIdStrict
 import com.tianting.sdk.tipText
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -217,12 +218,14 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
     val isGroup = parsed.convType == ConvType.GROUP
     val to = parsed.to
     val conv = im.convs.firstOrNull { it.convId == convId }
-    val messages by remember(convId) { im.client.messagesFlow(convId) }.collectAsState()
+    // SDK 在自己的线程上更新这个流：在主线程收（问题 A16）。不依赖组合所在的调度器会不会切线程：在 SDK 线程上恢复的话，
+    // 重组和消息列表的测量会跑在 SDK 线程上，和主线程的绘制同时进行（LazyColumn IndexOutOfBoundsException）。
+    val messages by remember(convId) { im.client.messagesFlow(convId) }.collectAsState(context = Dispatchers.Main)
     val connected = im.state == com.tianting.sdk.ConnState.CONNECTED
 
     // 快照（G-UI-21）：SDK 接口是 suspend，取到之前（Loaded = null）不下结论。convAdded 时 SDK 清快照，会话也回到列表。
     val loadedSnapshot by produceState<Loaded<ConversationSnapshot?>?>(null, convId, conv == null, im.removedTick) {
-        value = Loaded(im.client.conversationSnapshot(convId))
+        value = Loaded(onMain { im.client.conversationSnapshot(convId) })
     }
     val snapshot = loadedSnapshot?.value
 
@@ -246,7 +249,7 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
     LaunchedEffect(convId, unknown, connected) {
         if (!unknown || !connected || probeDone) return@LaunchedEffect
         try {
-            im.client.loadHistory(convId)
+            onMain { im.client.loadHistory(convId) }
             probeDone = true
         } catch (e: CancellationException) {
             throw e
@@ -276,7 +279,7 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
         if (history == HistoryState.LOADING || history == HistoryState.END) return
         history = HistoryState.LOADING
         history = try {
-            if (im.client.loadHistory(convId)) HistoryState.IDLE else HistoryState.END
+            if (onMain { im.client.loadHistory(convId) }) HistoryState.IDLE else HistoryState.END
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -433,7 +436,7 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
                 }
             }
         }
-        val mute by produceState<com.tianting.sdk.MuteInfo?>(null, convId, im.muteTick) { value = im.client.muteState(convId) }
+        val mute by produceState<com.tianting.sdk.MuteInfo?>(null, convId, im.muteTick) { value = onMain { im.client.muteState(convId) } }
         when {
             probing -> Unit
             blocked != null -> DisabledBar(blocked.bar)

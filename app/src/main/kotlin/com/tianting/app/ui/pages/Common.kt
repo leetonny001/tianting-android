@@ -26,6 +26,8 @@ import com.tianting.app.ui.theme.TtIcons
 import com.tianting.sdk.ConnState
 import com.tianting.sdk.Relation
 import com.tianting.sdk.UserProfile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private data class Tab(val path: String, val label: String, val tag: String)
 
@@ -102,10 +104,17 @@ fun rememberRelation(userId: String): Relation? {
     val im = LocalIm.current
     val r by produceState<Relation?>(null, userId, im.friends, im.requests, im.blocks) {
         value = try {
-            im.client.relationOf(userId)
+            onMain { im.client.relationOf(userId) }
         } catch (_: IllegalStateException) {
             value
         }
     }
     return r
 }
+
+/**
+ * SDK 的挂起接口在 SDK 线程（tianting-sdk）上完成。从组合里的协程（produceState、LaunchedEffect、rememberCoroutineScope）
+ * 调用时，用它回到主线程再写界面状态、导航（问题 A16、A17）：不依赖组合所在的调度器会不会切线程，否则重组和布局会跑在
+ * SDK 线程上，和主线程同时进行。
+ */
+internal suspend fun <T> onMain(block: suspend () -> T): T = withContext(Dispatchers.Main) { block() }

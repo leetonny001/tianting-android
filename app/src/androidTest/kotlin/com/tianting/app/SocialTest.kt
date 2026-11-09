@@ -233,7 +233,7 @@ class SocialTest : UiTest() {
         go(chatPath(BOB_CONV))
         repeat(2) {
             type("composer-input", "fail$it")
-            click("send-button")
+            clickSendWhenSettled()
             rule.waitText("fail$it")
         }
         waitFor("failed") { model.im!!.pendingCount == 2 && rule.onAllNodesWithTag("failed-icon", useUnmergedTree = true).fetchSemanticsNodes().size == 2 }

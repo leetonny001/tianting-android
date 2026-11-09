@@ -1,8 +1,8 @@
 # tianting-android
 
-天听 Android 客户端（Kotlin + Compose）。**天听**是自研的微信式 IM 产品。
+天听 Android 客户端（Kotlin + Compose）。**天听**是自研的独立 IM 产品。
 
-天听的 Android 客户端，UI 和基本功能参考微信。
+天听的 Android 客户端，信息架构和基本功能见 tianting-server 的 PRD。
 
 | | |
 |---|---|
