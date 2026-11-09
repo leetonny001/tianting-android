@@ -142,7 +142,8 @@ class ChatTest : UiTest() {
         server.handlers["send"] = { Reply.Hold }
         start("tianting://chat/c2c%3Aalice%3Abob")
         sendText("发送中的")
-        rule.waitText("发送中的")
+        // 等消息气泡，不是任意文字：刚点发送时输入框里可能还是这段字，waitText 会先被它满足（FE-620 实测）。
+        rule.waitUntil(5000) { rule.onAllNodes(hasTestTag("message") and hasAnyDescendant(hasText("发送中的")), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         assertEquals("sending", status("发送中的"))
         n("sending-icon").assertExists()
         // ack 回错误：失败

@@ -141,6 +141,7 @@ class AccountE2eTest {
         ui.tap("register-submit")
         ui.waitTag("register-error")
         assertEquals("邀请码无效", ui.textOf("register-error"))
+        assertEquals(2, server.inviteUsed(code), "管理接口显示已用 2 次")
         // 用户名已被占用（TC-ACC-01-13）
         ui.type("register-username", r1)
         ui.type("register-invite", server.invite())
@@ -475,7 +476,7 @@ class AccountE2eTest {
         assertFalse(ui.hasTag("privacy-failed"))
     }
 
-    @Test fun tc_acc_04_24_real_sequences_show_the_same_date() { // TC-ACC-04-24 的甲、丙、丁（乙的服务端判定在 BE-422；时间用 [IM 钟]）、AC-ACC-04-25
+    @Test fun tc_acc_04_24_real_sequences_show_the_same_date() { // TC-ACC-04-24 的甲、乙、丙、丁（时间用 [IM 钟]）、AC-ACC-04-25
         val t0 = System.currentTimeMillis()
         server.freezeClock(t0)
         // 甲：X 先退出其他设备再改密，V 第 1 天上线
@@ -491,6 +492,29 @@ class AccountE2eTest {
                 x.account.login(u, GOOD_PASSWORD)
                 x.account.logoutOthers(GOOD_PASSWORD)
                 x.account.changePassword(GOOD_PASSWORD, NEW_PASSWORD)
+            }
+            server.freezeClock(t0 + 86_400_000L)
+            replaceWithRealDeps()
+            ui.openApp()
+            assertRecoverDialog(t0)
+            confirmDialogToLogin()
+            runBlocking { model.awaitTeardown() }
+        }
+        // 乙：X 改密后申请注销，V 第 1 天上线
+        server.freezeClock(t0)
+        server.resetLimits()
+        run {
+            val (u, _) = account()
+            ui.openApp()
+            ui.loginAndEnter(u, GOOD_PASSWORD)
+            ui.scenario?.close()
+            inst.runOnMainSync { model.im?.stop() }
+            runBlocking { model.im?.client?.close() }
+            val x = device()
+            runBlocking {
+                x.account.login(u, GOOD_PASSWORD)
+                x.account.changePassword(GOOD_PASSWORD, NEW_PASSWORD)
+                x.account.requestDelete(NEW_PASSWORD)
             }
             server.freezeClock(t0 + 86_400_000L)
             replaceWithRealDeps()
@@ -575,5 +599,204 @@ class AccountE2eTest {
             val e = runCatching { device().account.login("nouser1", "wrong-pass-1") }.exceptionOrNull() as AccountError
             assertEquals(4018, e.code)
         }
+    }
+
+    // ---- FE-620：之前只对假服务端跑的部分，提醒和踢线同时出现 ----
+
+    private fun shot(name: String) {
+        rule.waitForIdle()
+        val dir = File(testContext.getExternalFilesDir(null), "shots-real").apply { mkdirs() }
+        val bmp = inst.uiAutomation.takeScreenshot()
+        java.io.FileOutputStream(File(dir, "$name.png")).use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
+    /** 数到达真实服务端的刷新请求，可以拖后响应。 */
+    private class CountingHttp(val path: String = "/v1/account/token/refresh", val holdMs: Long = 0) : HttpTransport {
+        private val real = OkHttpHttpTransport()
+        val count = java.util.concurrent.atomic.AtomicInteger()
+        override fun request(req: HttpRequest, callback: HttpCallback): HttpCall {
+            if (!req.url.endsWith(path)) return real.request(req, callback)
+            count.incrementAndGet()
+            if (holdMs == 0L) return real.request(req, callback)
+            return real.request(
+                req,
+                object : HttpCallback {
+                    override fun onResponse(response: com.tianting.sdk.HttpResponse) {
+                        Thread { Thread.sleep(holdMs); callback.onResponse(response) }.start()
+                    }
+                    override fun onFailure() = callback.onFailure()
+                },
+            )
+        }
+    }
+
+    /** 关掉 Activity 和连接，存储留着（攻击者动手时受害者不在线）。 */
+    private fun stopApp() {
+        ui.scenario?.close()
+        inst.runOnMainSync { model.im?.stop() }
+        runBlocking { model.im?.client?.close() }
+    }
+
+    /** 用这份存储"重新打开"App：关掉旧连接，存储里的值由 edit 改。 */
+    private fun reopenWith(http: HttpTransport? = null, edit: (com.tianting.sdk.AccountSession) -> com.tianting.sdk.AccountSession = { it }) {
+        ui.scenario?.close()
+        val old = model
+        inst.runOnMainSync { old.im?.stop() }
+        runBlocking {
+            runCatching { old.im?.client?.close() } // stopApp() 已经关过的话会被拒绝，不影响
+            val store = KeystoreSessionStore(testContext)
+            store.save(edit(store.load()!!))
+        }
+        replaceWithRealDeps(defaultDeps(testContext, http))
+        ui.openApp()
+    }
+
+    @Test fun fe620_notices_on_real_server_with_kick() { // AC-ACC-02-13；F-ACC-05 规则 5；A12、A13
+        val (u, _) = account()
+        ui.openApp()
+        ui.loginAndEnter(u, GOOD_PASSWORD)
+        val x = device()
+        runBlocking { x.account.login(u, GOOD_PASSWORD) }
+        ui.waitText("你的账号在新设备登录", 3000)
+        shot("notice-newDeviceLogin")
+        runBlocking { x.account.regenerateRecoveryCode(GOOD_PASSWORD) }
+        ui.waitText("你的恢复码已重新生成", 8000)
+        assertFalse(ui.hasTag("kicked-dialog"))
+        shot("notice-recoveryCodeRegenerated")
+        val t = System.currentTimeMillis()
+        runBlocking { x.account.changePassword(GOOD_PASSWORD, NEW_PASSWORD) }
+        // 服务端先发提醒再踢线：两个同时在屏幕上时弹窗要能看、能点。
+        assertRecoverDialog(t)
+        shot("notice-passwordChanged-with-dialog")
+        Thread.sleep(1500) // 弹窗动画结束后再截一张，看两层弹窗是不是叠在一起
+        shot("notice-passwordChanged-with-dialog-settled")
+        rule.waitUntil(1000) { ui.hasTag("kicked-ok") }
+        confirmDialogToLogin()
+        shot("notice-after-dialog")
+    }
+
+    @Test fun tc_acc_03_10_real_timer_refresh_reconnects_quietly() { // TC-ACC-03-10、AC-ACC-03-10：真实定时器和真实服务端，时间靠改存储里的到期，不是 [SDK 钟]
+        val (u, _) = account()
+        ui.openApp()
+        ui.loginAndEnter(u, GOOD_PASSWORD)
+        val before = storedSession()!!
+        val http = CountingHttp()
+        reopenWith(http) { it.copy(accessExpiresAt = System.currentTimeMillis() + 6 * 3_600_000L + 8000) }
+        ui.waitConnected()
+        assertEquals(0, http.count.get(), "还没到 6 小时")
+        var banner = false
+        rule.waitUntil(20_000) {
+            banner = banner || ui.hasTag("conn-banner")
+            storedSession()?.refreshToken != before.refreshToken && model.im?.state == ConnState.CONNECTED
+        }
+        assertEquals(1, http.count.get())
+        assertFalse(banner, "不提示")
+        assertFalse(ui.hasTag("kicked-dialog"))
+        // 换 token 之后消息照常：发给自己，服务端确认。
+        val result = runBlocking { model.im!!.client.send("c2c:$u:$u", "after refresh") }
+        assertTrue(result is com.tianting.sdk.SendResult.Ok, "$result")
+        val msg = (result as com.tianting.sdk.SendResult.Ok).message
+        rule.waitUntil(10_000) { model.im!!.client.messages(msg.convId).any { it.clientMsgId == msg.clientMsgId && it.msgId != null } }
+    }
+
+    @Test fun tc_acc_03_23_real_start_and_foreground_share_one_refresh() { // TC-ACC-03-23 的启动、回前台入口，AC-ACC-03-23：真实服务端上只到达 1 次
+        val (u, _) = account()
+        ui.openApp()
+        ui.loginAndEnter(u, GOOD_PASSWORD)
+        val http = CountingHttp(holdMs = 1500)
+        reopenWith(http) { it.copy(accessExpiresAt = System.currentTimeMillis() - 1000) }
+        inst.runOnMainSync { repeat(3) { model.account.foreground() } }
+        ui.waitConnected()
+        assertEquals(1, http.count.get())
+    }
+
+    @Test fun tc_acc_03_26_real_replay_dialog() { // TC-ACC-03-26、AC-ACC-03-26
+        val (u, _) = account()
+        ui.openApp()
+        ui.loginAndEnter(u, GOOD_PASSWORD)
+        stopApp()
+        val t0 = System.currentTimeMillis()
+        server.freezeClock(t0)
+        val stolen = storedSession()!!.refreshToken!!
+        val access = server.refreshAccess(stolen)
+        assertEquals(200, server.eventsStatus(access)) // 攻击者转正
+        server.freezeClock(t0 + 3 * 60_000L)
+        val replay = server.metric("im_refresh_replay_total")
+        reopenWith { it.copy(accessExpiresAt = System.currentTimeMillis() - 1000) }
+        ui.waitTag("kicked-dialog", 25_000)
+        ui.waitText("检测到登录凭证异常")
+        assertTrue(server.metric("im_refresh_replay_total") > replay)
+        confirmDialogToLogin()
+    }
+
+    @Test fun tc_acc_03_41_real_superseded_once_then_replay() { // TC-ACC-03-41、AC-ACC-03-39：真实服务端只能造出 1 次，之后窗口结束就是重放。连续 3 次在 SessionUiTest（假服务端）
+        val (u, _) = account()
+        ui.openApp()
+        ui.loginAndEnter(u, GOOD_PASSWORD)
+        stopApp()
+        val t0 = System.currentTimeMillis()
+        server.freezeClock(t0)
+        val stolen = storedSession()!!.refreshToken!!
+        assertEquals(200, server.eventsStatus(server.refreshAccess(stolen)))
+        server.freezeClock(t0 + 2 * 60_000L - 4000) // 窗口还剩 4 秒
+        val http = CountingHttp()
+        reopenWith(http) { it.copy(accessExpiresAt = System.currentTimeMillis() - 1000) }
+        rule.waitUntil(15_000) { http.count.get() == 1 }
+        Thread.sleep(1500)
+        assertEquals(1, http.count.get(), "等 retryAfterSeconds，不提前重试")
+        assertFalse(ui.hasTag("kicked-dialog"), "留在当前页")
+        assertFalse(ui.hasTag("account-username"), "留在当前页")
+        server.freezeClock(t0 + 2 * 60_000L + 1000)
+        ui.waitTag("kicked-dialog", 20_000)
+        ui.waitText("检测到登录凭证异常")
+        assertEquals(2, http.count.get())
+        confirmDialogToLogin()
+    }
+
+    @Test fun tc_acc_04_25_real_response_after_31_seconds() { // TC-ACC-04-25 场景二、AC-ACC-04-27：真实服务端先踢线，响应 31 秒才到
+        val (u, _) = account()
+        val t = System.currentTimeMillis()
+        val http = CountingHttp("/v1/account/password", holdMs = 31_000)
+        replaceWithRealDeps(defaultDeps(testContext, http))
+        ui.openApp()
+        ui.loginAndEnter(u, GOOD_PASSWORD)
+        val before = storedSession()!!
+        inst.runOnMainSync { model.nav.resetTo("/me/settings/security/password") }
+        ui.type("password-old", GOOD_PASSWORD)
+        ui.type("password-new", NEW_PASSWORD)
+        ui.tap("password-submit")
+        val started = System.currentTimeMillis()
+        assertRecoverDialogOrKicked(t)
+        assertTrue(System.currentTimeMillis() - started > 25_000, "踢线要等改密超时才生效")
+        Thread.sleep(3000) // 迟到的响应到达：丢弃，不救回会话
+        assertTrue(ui.hasTag("kicked-dialog"))
+        // 踢线生效后会话结束、存储清空；迟到的成功响应不能把会话救回来（不比较值，免得 token 进测试日志）。
+        val after = storedSession()
+        assertTrue(after == null || after.refreshToken == before.refreshToken, "迟到的响应不换 token")
+        confirmDialogToLogin()
+    }
+
+    @Test fun tc_acc_03_45_real_absolute_limit() { // TC-ACC-03-45、AC-ACC-03-43：要 IM_REFRESH_ABSOLUTE=40s 的服务端（真实钟），默认服务端跳过
+        val (u, _) = account()
+        val http = CountingHttp()
+        replaceWithRealDeps(defaultDeps(testContext, http))
+        ui.openApp()
+        ui.loginAndEnter(u, GOOD_PASSWORD)
+        val s = storedSession()!!
+        org.junit.Assume.assumeTrue("要用 IM_REFRESH_ABSOLUTE=40s 单独跑", s.absoluteExpiresAt!! - System.currentTimeMillis() < 120_000)
+        assertEquals(s.absoluteExpiresAt, s.accessExpiresAt)
+        inst.runOnMainSync { repeat(2) { model.account.foreground() } }
+        Thread.sleep(2000)
+        assertEquals(0, http.count.get(), "到上限不再刷新")
+        assertEquals(ConnState.CONNECTED, model.im?.state)
+        // 模拟器的钟和服务端可能差几秒（FE-620 实测慢 4.4 秒），留 8 秒，问题 F2 的最后不足 1 秒也在外面。
+        Thread.sleep(maxOf(0L, s.absoluteExpiresAt!! - System.currentTimeMillis() - 8000))
+        assertEquals(0, http.count.get(), "到上限之前不刷新（最后不足 1 秒见问题 F2）")
+        assertEquals(ConnState.CONNECTED, model.im?.state)
+        ui.waitTag("kicked-ok", 20_000)
+        ui.waitText("登录已失效，请重新登录")
+        ui.tap("kicked-ok")
+        ui.toAccountForm()
+        rule.waitUntil(5000) { storedSession() == null }
     }
 }

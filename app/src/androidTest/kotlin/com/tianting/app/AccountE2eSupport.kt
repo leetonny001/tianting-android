@@ -61,7 +61,7 @@ class RealServer {
 
     /** 调用方签名（protocol/ADMIN.md「鉴权」）：邀请码只接受这种方式。 */
     private fun signed(method: String, path: String, body: JsonObject): JsonObject {
-        val raw = body.toString()
+        val raw = if (method == "GET") "" else body.toString()
         val ts = System.currentTimeMillis().toString()
         val nonce = JBase64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(16).also { SecureRandom().nextBytes(it) })
         val hash = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
@@ -71,7 +71,7 @@ class RealServer {
         val req = Request.Builder().url(adminBase + path)
             .header("X-IM-Caller", args.getString("ttCallerId")!!).header("X-IM-Timestamp", ts).header("X-IM-Nonce", nonce)
             .header("X-IM-Operator", "e2e").header("X-IM-Signature", sig)
-            .method(method, raw.toRequestBody("application/json".toMediaType())).build()
+            .method(method, if (method == "GET") null else raw.toRequestBody("application/json".toMediaType())).build()
         return http.newCall(req).execute().use { r ->
             val text = r.body?.string().orEmpty()
             check(r.isSuccessful) { "$method $path: ${r.code}" }
@@ -94,6 +94,12 @@ class RealServer {
         return first.jsonObject["code"]!!.jsonPrimitive.content
     }
 
+    /** 这个邀请码的已用次数（管理接口，只比后 4 位）。 */
+    fun inviteUsed(code: String): Int {
+        val rows = signed("GET", "/admin/invites", obj())["invites"]!!.jsonArray.map { it.jsonObject }
+        return rows.first { it["codeLast4"]!!.jsonPrimitive.content == code.takeLast(4) }["usedCount"]!!.jsonPrimitive.content.toInt()
+    }
+
     /** 直接请求刷新：(状态码, reason)。只用来确认服务端的状态。 */
     fun refreshStatus(refreshToken: String): Pair<Int, String?> {
         val req = Request.Builder().url("$base/v1/account/token/refresh").post(obj("refreshToken" to refreshToken).toString().toRequestBody("application/json".toMediaType())).build()
@@ -102,6 +108,19 @@ class RealServer {
             r.code to o["reason"]?.jsonPrimitive?.content
         }
     }
+
+    /** 持有偷来 refresh 的人：刷新，返回新的 access。 */
+    fun refreshAccess(refreshToken: String): String {
+        val req = Request.Builder().url("$base/v1/account/token/refresh").post(obj("refreshToken" to refreshToken).toString().toRequestBody("application/json".toMediaType())).build()
+        return http.newCall(req).execute().use { r ->
+            check(r.isSuccessful) { "refresh: ${r.code}" }
+            Json.parseToJsonElement(r.body?.string().orEmpty()).jsonObject["accessToken"]!!.jsonPrimitive.content
+        }
+    }
+
+    /** 用 access 调一次接口（转正）。 */
+    fun eventsStatus(accessToken: String): Int =
+        http.newCall(Request.Builder().url("$base/v1/account/events").header("Authorization", "Bearer $accessToken").build()).execute().use { it.code }
 
     /** 指标的值，没有这一行是 0。 */
     fun metric(name: String): Double = http.newCall(Request.Builder().url(metricsUrl).build()).execute().use { r ->

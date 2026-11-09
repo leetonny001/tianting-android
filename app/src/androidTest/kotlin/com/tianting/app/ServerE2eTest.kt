@@ -454,6 +454,8 @@ class ServerE2eTest {
     }
 
     @Test fun live_notice_banner_list_and_no_token_or_data_in_logcat() { // AC-UI-44-1、AC-PUSH-01-1、AC-UI-44-2、token 和 data 不进 Logcat
+        // 先清空：模拟器开得久了，`-b all` 一次读出来会超过测试进程的内存（OutOfMemoryError，FE-620 实测）。只看这个用例产生的日志。
+        inst.uiAutomation.executeShellCommand("logcat -b all -c").close()
         val u = uid("n")
         users(u)
         appLogin(u)
