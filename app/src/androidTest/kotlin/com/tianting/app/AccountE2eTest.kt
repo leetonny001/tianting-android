@@ -842,4 +842,110 @@ class AccountE2eTest {
         ui.toAccountForm()
         rule.waitUntil(5000) { storedSession() == null }
     }
+
+    /**
+     * 连接事件和刷新请求按发生顺序记在同一个列表里（只记事件名、关闭码、踢线原因、状态码，不记帧内容和 token）：
+     * ws:open（服务端接受了新连接，101）、kicked:原因、ws:close:关闭码、refresh:req、refresh:状态码。
+     */
+    private class WireLog {
+        val events = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+        val transport = object : com.tianting.sdk.Transport {
+            private val real = com.tianting.sdk.OkHttpTransport()
+            override fun open(url: String, handlers: com.tianting.sdk.TransportHandlers): com.tianting.sdk.TransportConnection = real.open(
+                url,
+                object : com.tianting.sdk.TransportHandlers {
+                    override fun onOpen() {
+                        events += "ws:open"
+                        handlers.onOpen()
+                    }
+                    override fun onMessage(text: String) {
+                        if ("\"type\":\"kicked\"" in text) events += "kicked:" + (Regex("\"reason\":\"(\\w*)\"").find(text)?.groupValues?.get(1) ?: "")
+                        handlers.onMessage(text)
+                    }
+                    override fun onClose(code: Int, reason: String) {
+                        events += "ws:close:$code"
+                        handlers.onClose(code, reason)
+                    }
+                },
+            )
+        }
+
+        val http = object : HttpTransport {
+            private val real = OkHttpHttpTransport()
+            override fun request(req: HttpRequest, callback: HttpCallback): HttpCall {
+                if (!req.url.endsWith("/v1/account/token/refresh")) return real.request(req, callback)
+                events += "refresh:req"
+                return real.request(
+                    req,
+                    object : HttpCallback {
+                        override fun onResponse(response: com.tianting.sdk.HttpResponse) {
+                            events += "refresh:${response.status}"
+                            callback.onResponse(response)
+                        }
+                        override fun onFailure() {
+                            events += "refresh:failure"
+                            callback.onFailure()
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    // P-35 L3（Android）：AC-ACC-03-12 后半，在线时 access 到期由真实服务端踢线。服务端的到期计时器在 auth 时按剩余时间设好、走真实时间，
+    // 调 IM 钟触发不了（同 tianting-ios@54caa87、tianting-web@47db681），所以要用 IM_ACCESS_TTL=30s 单独跑，默认服务端上跳过：
+    //   IM_ACCESS_TTL=30s scripts/run-tests.sh e2e com.tianting.app.AccountE2eTest#tc_acc_03_12_real_online_kick_refreshes_quietly
+    // 登录后 access 不足 6 小时，SDK 先自己刷新一次；新 token 到手也不足 6 小时（shortOnArrival），之后只有服务端踢线才刷新。
+    @Test fun tc_acc_03_12_real_online_kick_refreshes_quietly() { // TC-ACC-03-12、AC-ACC-03-12（真实服务端在线路径）
+        val (u, _) = account()
+        val wire = WireLog()
+        val d = defaultDeps(testContext, wire.http)
+        val ws = "${server.base.replace("http://", "ws://")}/ws"
+        replaceWithRealDeps(
+            com.tianting.app.core.AppDeps(
+                { v, f ->
+                    com.tianting.sdk.IMClient(
+                        com.tianting.sdk.IMClientOptions(
+                            url = ws, platform = com.tianting.sdk.Platform.ANDROID, database = com.tianting.sdk.android.AndroidLocalDatabase.open(testContext),
+                            isVisible = v, transport = wire.transport, files = f,
+                            attachmentDir = File(testContext.filesDir, com.tianting.app.core.ATTACHMENT_DIR), fileCacheDir = File(testContext.cacheDir, com.tianting.app.core.FILE_CACHE_DIR),
+                        ),
+                    )
+                },
+                d.login, d.sessions, d.isOnline, d.bindNetwork, d.account, d.bindAccountNetwork, d.collator, d.copyText, d.copySecret, d.demoBuild, d.newFiles,
+            ),
+        )
+        ui.openApp()
+        ui.loginAndEnter(u, GOOD_PASSWORD)
+        val first = storedSession()!!
+        org.junit.Assume.assumeTrue("要用 IM_ACCESS_TTL=30s 单独跑", first.accessExpiresAt!! - System.currentTimeMillis() < 120_000)
+        // 等服务端按自己的计时器踢 tokenExpired（30 秒的 access，最多再等一轮）。
+        val end = System.currentTimeMillis() + 75_000
+        while ("kicked:tokenExpired" !in wire.events) {
+            check(System.currentTimeMillis() < end) { "服务端没有踢 tokenExpired：${wire.events}" }
+            Thread.sleep(50)
+        }
+        val waitAfter = System.currentTimeMillis() + 20_000
+        fun after() = wire.events.toList().dropWhile { it != "kicked:tokenExpired" }
+        while (!(after().contains("refresh:200") && after().dropWhile { it != "refresh:200" }.contains("ws:open"))) {
+            check(System.currentTimeMillis() < waitAfter) { "踢线之后没有刷新再重连：${wire.events}" }
+            Thread.sleep(50)
+        }
+        rule.waitUntil(10_000) { model.im?.state == ConnState.CONNECTED }
+        val a = after()
+        val refresh = a.indexOf("refresh:req")
+        val reconnect = a.indexOf("ws:open")
+        assertTrue(refresh in 0 until reconnect, "先刷新再重连：$a")
+        assertEquals("refresh:200", a[refresh + 1], "刷新成功：$a")
+        Thread.sleep(2000)
+        assertFalse(ui.hasTag("kicked-dialog"), "不弹窗")
+        assertTrue(ui.hasTag("tab-chats"))
+        assertEquals(ConnState.CONNECTED, model.im?.state)
+        assertTrue(wire.events.none { it.startsWith("refresh:") && it != "refresh:req" && it != "refresh:200" }, "没有失败的刷新：${wire.events}")
+        assertTrue(wire.events.none { it.startsWith("kicked:") && it != "kicked:tokenExpired" }, "${wire.events}")
+        assertTrue(storedSession()!!.accessExpiresAt!! > first.accessExpiresAt!!, "存储换成了新的 access")
+        assertEquals(SessionMode.ACCOUNT, storedSession()!!.mode)
+        android.util.Log.i("TC-ACC-03-12", "events ${wire.events}") // 只有事件名、状态码和关闭码
+    }
 }

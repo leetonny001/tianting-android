@@ -542,13 +542,16 @@ private fun Bubble(
     val nav = LocalNav.current
     val senderName = rememberDisplayName(m.from)
     val sender = rememberProfile(m.from)
-    val supported = m.type == MsgType.TEXT
+    val im = LocalIm.current
+    val attachment = m.isAttachment()
+    val supported = m.type == MsgType.TEXT || attachment
     val failed = m.status == MessageStatus.FAILED
+    var viewing by remember { mutableStateOf(false) }
     val hasMenu = supported || failed
     val avatar: @Composable () -> Unit = {
         Box(
             Modifier.tag("msg-avatar").size(40.dp).clickable { nav.go(userPath(m.from), userState) }.semantics { contentDescription = "查看 $senderName 的资料" },
-        ) { Avatar(m.from, senderName, 40.dp, src = sender?.avatar) }
+        ) { Avatar(m.from, senderName, 40.dp, src = sender?.avatar, local = if (m.from == im.self) im.media?.localAvatar else null) }
     }
     val bubbleShape = if (mine) RoundedCornerShape(12.dp, 4.dp, 12.dp, 12.dp) else RoundedCornerShape(4.dp, 12.dp, 12.dp, 12.dp)
     Row(
@@ -580,24 +583,33 @@ private fun Bubble(
                         mine -> Tt.colors.bubbleSelfText
                         else -> Tt.colors.bubbleOtherText
                     }
+                    val image = m.type == MsgType.IMAGE
                     Box(
                         Modifier.widthIn(max = maxWidth).tag("bubble").clip(bubbleShape).background(bg).then(border)
                             .combinedClickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
-                                enabled = hasMenu,
+                                enabled = hasMenu && (!attachment || failed),
                                 onClick = {},
                                 onLongClick = onMenu,
-                            ).padding(horizontal = 12.dp, vertical = 8.dp),
+                            ).padding(horizontal = if (image) 4.dp else 12.dp, vertical = if (image) 4.dp else 8.dp),
                     ) {
-                        T(if (supported) m.body.text.orEmpty() else "[暂不支持的消息]", color = fg)
+                        when (m.type) {
+                            MsgType.IMAGE -> ImageContent(m) { viewing = true }
+                            MsgType.FILE -> FileContent(m, mine, convId)
+                            MsgType.TEXT -> T(m.body.text.orEmpty(), color = fg)
+                            else -> T("[暂不支持的消息]", color = fg)
+                        }
                     }
                     if (menuOpen) BubbleMenu(m, convId, listTop, onMenuClose)
                 }
             }
+            if (mine && attachment) AttachmentStatus(m, convId)
         }
         if (mine) avatar()
     }
+    val fileId = m.body.image?.fileId
+    if (viewing && !fileId.isNullOrEmpty()) ImageViewer(fileId, m.body.image?.mime) { viewing = false }
 }
 
 private val MENU_GAP = 4.dp
@@ -668,7 +680,31 @@ private fun Composer(convId: String, onSent: () -> Unit) {
     val keyboard = LocalSoftwareKeyboardController.current
     var value by remember { mutableStateOf(TextFieldValue(im.drafts[convId].orEmpty()).let { it.copy(selection = TextRange(it.text.length)) }) }
     var emoji by remember { mutableStateOf(false) }
+    var attach by remember { mutableStateOf(false) }
+    var keepInfo by remember { mutableStateOf<List<android.net.Uri>?>(null) }
     var sending by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val pickImages = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia(com.tianting.app.core.MAX_PICK),
+    ) { uris -> picked(im, app, context, convId, com.tianting.app.core.PickKind.IMAGES, uris) { keepInfo = it } }
+    val pickFiles = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris -> picked(im, app, context, convId, com.tianting.app.core.PickKind.FILES, uris) { keepInfo = it } }
+
+    fun pick(kind: com.tianting.app.core.PickKind) {
+        attach = false
+        val hook = app.deps.pickForTest
+        if (hook != null) {
+            hook(kind)?.let { picked(im, app, context, convId, kind, it) { u -> keepInfo = u } }
+            return
+        }
+        // 系统照片选择器（不要存储权限）、SAF（第 13.2 节）。
+        if (kind == com.tianting.app.core.PickKind.IMAGES) {
+            pickImages.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+        } else {
+            pickFiles.launch(arrayOf("*/*"))
+        }
+    }
     val latest = rememberUpdated(value.text)
     DisposableEffect(convId) {
         im.drafts.remove(convId)
@@ -711,13 +747,29 @@ private fun Composer(convId: String, onSent: () -> Unit) {
             IconButton({
                 if (!emoji) keyboard?.hide()
                 emoji = !emoji
+                attach = false
             }, Modifier.tag("emoji-button").size(44.dp)) {
                 Icon(TtIcons.smile, "表情", tint = Tt.colors.textSecondary)
+            }
+            // "+"：图片、文件（第 13.3 节）；features.files 关闭时没有。
+            if (im.filesEnabled) {
+                IconButton({
+                    if (!attach) keyboard?.hide()
+                    attach = !attach
+                    emoji = false
+                }, Modifier.tag("attach-button").size(44.dp)) {
+                    Icon(TtIcons.plus, "发送图片或文件", tint = Tt.colors.textSecondary)
+                }
             }
             BasicTextField(
                 value,
                 { value = it },
-                Modifier.weight(1f).tag("composer-input").heightIn(min = 44.dp).onFocusChanged { if (it.isFocused) emoji = false },
+                Modifier.weight(1f).tag("composer-input").heightIn(min = 44.dp).onFocusChanged {
+                    if (it.isFocused) {
+                        emoji = false
+                        attach = false
+                    }
+                },
                 textStyle = Tt.type.body.copy(color = Tt.colors.textPrimary),
                 cursorBrush = SolidColor(Tt.colors.brand),
                 maxLines = 5,
@@ -733,6 +785,12 @@ private fun Composer(convId: String, onSent: () -> Unit) {
             PrimaryButton("发送", Modifier.tag("send-button"), enabled = canSend) { send() }
         }
         if (over > 0) T("已超出 $over 字", Modifier.tag("over-limit").padding(start = 16.dp, bottom = 8.dp), style = Tt.type.small, color = Tt.colors.danger)
+        if (attach && im.filesEnabled) {
+            Row(Modifier.tag("attach-panel").fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                AttachTile(TtIcons.image, "图片", "attach-image") { pick(com.tianting.app.core.PickKind.IMAGES) }
+                AttachTile(TtIcons.file, "文件", "attach-file") { pick(com.tianting.app.core.PickKind.FILES) }
+            }
+        }
         if (emoji) {
             FlowRow(
                 Modifier.tag("emoji-panel").fillMaxWidth().height(240.dp).verticalScroll(rememberScrollState()).padding(8.dp),
@@ -743,6 +801,86 @@ private fun Composer(convId: String, onSent: () -> Unit) {
                     }
                 }
             }
+        }
+    }
+    keepInfo?.let { uris ->
+        Confirm(com.tianting.app.core.KEEP_METADATA_TIP, "发送", "keep-info-dialog", onCancel = { keepInfo = null }, onOk = {
+            keepInfo = null
+            sendPicked(im, app, context, convId, com.tianting.app.core.PickKind.FILES, uris)
+        })
+    }
+}
+
+@Composable
+private fun AttachTile(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, tag: String, onClick: () -> Unit) {
+    Column(
+        Modifier.tag(tag).clip(RoundedCornerShape(TtDimen.radiusMd.dp)).clickable(onClick = onClick).padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(Modifier.size(56.dp).clip(RoundedCornerShape(TtDimen.radiusMd.dp)).background(Tt.colors.bg), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = Tt.colors.textSecondary)
+        }
+        T(label, style = Tt.type.caption, color = Tt.colors.textSecondary)
+    }
+}
+
+/**
+ * 选好了（F-FILE-07 规则 6：一次最多 9 个，多了整批不发，H16）。图片按选择顺序逐个交给 SDK（规则 5）；
+ * "文件"方式里有图片时先提示保留原始信息，确认后才发（F-FILE-03 规则 2，AC-FILE-03-6）。
+ */
+private fun picked(
+    im: com.tianting.app.core.ImSession,
+    app: com.tianting.app.core.AppModel,
+    context: android.content.Context,
+    convId: String,
+    kind: com.tianting.app.core.PickKind,
+    uris: List<android.net.Uri>,
+    askKeepInfo: (List<android.net.Uri>) -> Unit,
+) {
+    if (uris.isEmpty()) return
+    if (uris.size > com.tianting.app.core.MAX_PICK) {
+        app.toast.show(com.tianting.app.core.PICK_TOO_MANY)
+        return
+    }
+    if (kind == com.tianting.app.core.PickKind.FILES) {
+        val anyImage = uris.any { u ->
+            val (name, _, mime) = com.tianting.app.core.queryMeta(context.contentResolver, u)
+            com.tianting.app.core.looksLikeImage(mime, name)
+        }
+        if (anyImage) {
+            askKeepInfo(uris)
+            return
+        }
+    }
+    sendPicked(im, app, context, convId, kind, uris)
+}
+
+internal fun sendPicked(
+    im: com.tianting.app.core.ImSession,
+    app: com.tianting.app.core.AppModel,
+    context: android.content.Context,
+    convId: String,
+    kind: com.tianting.app.core.PickKind,
+    uris: List<android.net.Uri>,
+) {
+    val media = im.media ?: return
+    im.launchCmd({ e -> app.toast.show(if (e is com.tianting.sdk.NotConnectedError) "正在连接，请稍后再发送" else defaultMessage(errCode(e))) }) {
+        for (u in uris) {
+            if (kind == com.tianting.app.core.PickKind.FILES) {
+                val size = com.tianting.app.core.queryMeta(context.contentResolver, u).second
+                if (size != null && size > com.tianting.app.core.FILE_MAX_BYTES) {
+                    app.toast.show("文件过大，最大 100 MB")
+                    continue
+                }
+            }
+            val p = try {
+                media.copyIn(u)
+            } catch (e: com.tianting.app.core.PickFailed) {
+                app.toast.show(if (e.storage) com.tianting.app.core.STORAGE_FULL else com.tianting.app.core.SOURCE_MISSING)
+                continue
+            }
+            if (kind == com.tianting.app.core.PickKind.IMAGES) media.sendImage(convId, p) else media.sendFile(convId, p)
         }
     }
 }

@@ -68,7 +68,7 @@ fun SecurityPage() {
     var deleting by remember { mutableStateOf(false) }
     LaunchedEffect(attempt) {
         try {
-            events = app.account.listEvents()
+            events = onMain { app.account.listEvents() }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {

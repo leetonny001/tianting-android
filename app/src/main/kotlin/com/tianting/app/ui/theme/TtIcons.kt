@@ -51,6 +51,11 @@ internal object TtIcons {
     val more by lazy { lucide("ellipsis", circle(12f, 12f, 1f), circle(19f, 12f, 1f), circle(5f, 12f, 1f)) }
     val failed by lazy { lucide("circle-alert", circle(12f, 12f, 10f), line(12f, 8f, 12f, 12f), line(12f, 16f, 12.01f, 16f)) }
     val loading by lazy { lucide("loader-circle", "M21 12a9 9 0 1 1-6.219-8.56") }
+    // 图片和文件（PRD-chat 第 13.3 节，FE-635、FE-636）
+    val image by lazy { lucide("image", "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z", circle(9f, 9f, 2f), "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21") }
+    val file by lazy { lucide("file", "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", "M14 2v4a2 2 0 0 0 2 2h4") }
+    val close by lazy { lucide("x", "M18 6 6 18", "m6 6 12 12") }
+    val download by lazy { lucide("download", "M12 15V3", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m7 10 5 5 5-5") }
     val smile by lazy { lucide("smile", circle(12f, 12f, 10f), "M8 14s1.5 2 4 2 4-2 4-2", line(9f, 9f, 9.01f, 9f), line(15f, 9f, 15.01f, 9f)) }
     val newFriend by lazy { lucide("user-round-plus", "M2 21a8 8 0 0 1 13.292-6", circle(10f, 8f, 5f), "M19 16v6", "M22 19h-6") }
     val groups by lazy {

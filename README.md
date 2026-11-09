@@ -36,6 +36,8 @@ export ANDROID_HOME=~/Library/Android/sdk
 scripts/run-tests.sh ui                # 模拟器：Compose UI Test（假服务端）
 scripts/run-tests.sh e2e               # 模拟器 + 真实 im-server（自动编译、启动、关闭，需要 Go 和服务端源码）
 scripts/run-tests.sh kill              # 模拟器 + 真实 im-server：真实杀进程的场景，每个场景两次 am instrument
+scripts/run-tests.sh e2e com.tianting.app.FilesE2eTest   # 图片和文件：真实 im-server + 假 S3（scripts/fake_s3.py）
+IM_ACCESS_TTL=30s scripts/run-tests.sh e2e com.tianting.app.AccountE2eTest#tc_acc_03_12_real_online_kick_refreshes_quietly  # 在线时服务端踢 tokenExpired（默认服务端跳过）
 scripts/run-tests.sh shots             # 截图巡检（浅色、深色），PNG 在 shots/
 scripts/release-logcat-check.sh        # release 的 R8 构建真实收发后，设备日志搜不到特征串和 token
 scripts/push-logcat-check.sh           # 同上，真实收一条系统通知
@@ -47,6 +49,12 @@ python3 -I tools/ac_coverage/coverage.py ../tianting-server/docs/prd/PRD-ui-v1.0
 `release` 构建：`-Ptianting.serverUrl=https://…` 指定服务端，`-Ptianting.demoLogin=true` 打开演示登录的构建开关（默认关闭；和服务端 `GET /v1/config` 的 `demoLogin` 同时为真才显示演示表单，否则只有账号登录）；明文流量全部禁用。
 
 深链接：`tianting://chat/{convId}`（convId 百分号编码）等，只接受路由表里的路径，其余进 `/chats`；未登录时先登录再进入。
+
+## 图片和文件（C2）
+
+"+"（`features.files` 打开时）：系统照片选择器（`PickMultipleVisualMedia(9)`，不要存储权限）、SAF。选中的内容先复制进 `cache/tt-pick`，图片轮到它时再处理（`core/ImageProcessing.kt`：按 EXIF 方向转正后重新编码、去掉 EXIF；长边 4096；缩略图 480、≤ 512 KiB；GIF 不重新编码），SDK 复制进 `files/tianting-attachments`（沙盒，发出后删除，失败保留，退出登录清空）。下载用 SDK 的 OkHttp 到 `cache/tianting-files`（键 fileId + variant），"打开"只对 pdf、txt、图片（`FileProvider`），"保存"用 SAF。"我"页点头像换头像（裁剪成 512×512）。
+
+`scripts/test-server.sh` 同时启动假 S3（`127.0.0.1:18283`，只用标准库），服务端 `IM_FILES_ENABLED=1`；`run-tests.sh` 用 `adb reverse` 把模拟器的同一端口转到 Mac，debug 的网络安全配置只多放行 `127.0.0.1` 的明文（F-FILE-01 规则 10）。`TT_FILES=0` 关掉。
 
 ## 系统通知
 

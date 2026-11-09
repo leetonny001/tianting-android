@@ -100,6 +100,17 @@ class ImSession(
     /** 资料缓存的界面副本（F-SOC-10）：getUsers 拿到的都放这里。不可见、不存在都没有这一项。 */
     val profiles = mutableStateMapOf<String, UserProfile>()
 
+    /** 图片和文件（FE-635、FE-636）。AppModel 在 start 之前设置；为 null 时（测试的假依赖没有配文件接口）不能发附件。 */
+    var media: MediaOps? = null
+
+    /** 头像上传用的文件接口（F-ACC-06 规则 3）。 */
+    var files: com.tianting.sdk.FileClient? = null
+
+    /** 服务端配置的 features.files（GET /v1/config）：关闭时没有"+"（第 13.3 节）。 */
+    var filesFeature: () -> Boolean = { false }
+
+    val filesEnabled: Boolean get() = media != null && filesFeature()
+
     /** 私聊权限提示条的来源（F-UI-31）：clientMsgId → 错误码。只在内存。 */
     val sendTips = mutableStateMapOf<String, Int>()
 
@@ -156,6 +167,15 @@ class ImSession(
 
     /** F-UI-08 规则 3：每条消息每次失败只提示一次。4035 / 4036 / 4137 插提示条，4031 有禁用条；超时、被踢都不提示。 */
     private fun onSendFailed(e: IMEvent.SendFailed) {
+        // 图片和文件：失败原因显示在气泡下面，另外提示一次（PRD 有文案的用 PRD 的，D12）。
+        val m = client.messages(e.convId).firstOrNull { it.clientMsgId == e.clientMsgId }
+        if (m != null && (m.type == com.tianting.sdk.MsgType.IMAGE || m.type == com.tianting.sdk.MsgType.FILE)) {
+            media?.progress?.remove(e.clientMsgId)
+            val text = attachmentErrorText(m.copy(error = e.error))
+            val code = (e.error as? SendError.Code)?.code
+            if (code == 4035 || code == 4036 || code == 4137) sendTips[e.clientMsgId] = code else if (text.isNotEmpty()) toast(text)
+            return
+        }
         val code = (e.error as? SendError.Code)?.code ?: return
         when (code) {
             4035, 4036, 4137 -> sendTips[e.clientMsgId] = code
@@ -201,6 +221,7 @@ class ImSession(
 
     fun stop() {
         notices.stop()
+        media?.clear()
         network?.close()
         network = null
         scope.cancel()

@@ -54,7 +54,7 @@ fun ChatInfoPage(convId: String) {
     val group = parsed.convType == ConvType.GROUP
     val to = parsed.to
     val conv = im.convs.firstOrNull { it.convId == convId }
-    val snapshot by produceState<ConversationSnapshot?>(null, convId, conv == null, im.removedTick) { value = im.client.conversationSnapshot(convId) }
+    val snapshot by produceState<ConversationSnapshot?>(null, convId, conv == null, im.removedTick) { value = onMain { im.client.conversationSnapshot(convId) } }
     var gone by remember { mutableStateOf(false) }
     if (group && snapshot == null && !gone) {
         GroupSettings(convId) { gone = true }
@@ -92,7 +92,7 @@ class GroupInfoState(private val im: ImSession, private val groupId: String) {
 
     suspend fun refresh() {
         try {
-            info = im.client.getGroupInfo(groupId)
+            info = onMain { im.client.getGroupInfo(groupId) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -148,7 +148,7 @@ class GroupMembersState(private val im: ImSession, private val groupId: String) 
             var list = emptyList<GroupMemberInfo>()
             var next = ""
             do {
-                val page = im.client.loadGroupMembers(groupId, next.ifEmpty { null })
+                val page = onMain { im.client.loadGroupMembers(groupId, next.ifEmpty { null }) }
                 if (mine != generation) return
                 list = merge(list, page.members)
                 next = page.nextCursor
@@ -168,7 +168,7 @@ class GroupMembersState(private val im: ImSession, private val groupId: String) 
         val mine = generation
         busy = true
         try {
-            val page = im.client.loadGroupMembers(groupId, cursor)
+            val page = onMain { im.client.loadGroupMembers(groupId, cursor) }
             if (mine == generation) publish(merge(members, page.members), page.nextCursor)
         } catch (e: CancellationException) {
             throw e

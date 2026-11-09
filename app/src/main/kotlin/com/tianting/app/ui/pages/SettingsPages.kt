@@ -113,7 +113,7 @@ fun GroupsPage() {
     LaunchedEffect(connected, attempt) {
         if (!connected) return@LaunchedEffect
         try {
-            groups = im.client.loadMyGroups()
+            groups = onMain { im.client.loadMyGroups() }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -167,7 +167,7 @@ fun MePage() {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             // 账号会话能改昵称（F-UI-15 规则 2、AC-UI-15-3）。演示会话没有入口。
             TtRow(tag = "me-card", minHeight = 96.dp, onClick = if (im.isAccount) ({ nav.go("/me/nickname") }) else null) {
-                Avatar(im.self, name, 64.dp, src = profile?.avatar)
+                MeAvatar(name, profile?.avatar) // 点头像换头像（F-ACC-06 规则 3，账号会话）
                 Column(Modifier.weight(1f)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                         T(name, Modifier.weight(1f, fill = false).tag("me-name"), style = Tt.type.large)

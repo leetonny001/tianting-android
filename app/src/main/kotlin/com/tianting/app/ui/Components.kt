@@ -204,10 +204,11 @@ object HttpsOnly : Interceptor {
 }
 
 @Composable
-fun Avatar(id: String, name: String, size: Dp, group: Boolean = false, src: String? = null) {
+fun Avatar(id: String, name: String, size: Dp, group: Boolean = false, src: String? = null, local: java.io.File? = null) {
     val shape = if (group) RoundedCornerShape(TtDimen.radiusGroup.dp) else CircleShape
-    var failed by remember(src) { mutableStateOf(false) }
-    val url = avatarImageUrl(src).takeIf { !failed }
+    var failed by remember(src, local) { mutableStateOf(false) }
+    // local：这次登录里自己刚换的头像（本机文件，同 H5 的 H13）；其他只接受 https 地址（AC-UI-21-5）。
+    val url: Any? = (local ?: avatarImageUrl(src)).takeIf { !failed }
     val density = LocalDensity.current
     // 占位字不随系统字体放大：头像大小是固定的。
     val initialSize = with(density) { (size * 0.42f).toSp() }

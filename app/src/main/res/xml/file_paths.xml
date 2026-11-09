@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 只暴露下载缓存（SDK 的 fileCacheDir，见 AppModel.FILE_CACHE_DIR），不暴露沙盒和其他私有文件。 -->
+<paths>
+    <cache-path name="downloads" path="tianting-files/" />
+</paths>

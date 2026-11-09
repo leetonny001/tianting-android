@@ -21,6 +21,9 @@ import com.tianting.sdk.AccountError
 import com.tianting.sdk.AccountEvent
 import com.tianting.sdk.AccountSession
 import com.tianting.sdk.AuthResult
+import com.tianting.sdk.FileClient
+import com.tianting.sdk.OkHttpObjectTransport
+import com.tianting.sdk.StaticTokenAuth
 import com.tianting.sdk.HttpTransport
 import com.tianting.sdk.IMClient
 import com.tianting.sdk.IMClientOptions
@@ -47,11 +50,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import java.io.Closeable
+import java.io.File
 import java.net.URI
 
 /** App 的外部依赖；测试替换成假传输层、假登录、假账号接口。 */
 class AppDeps(
-    val newClient: (isVisible: () -> Boolean) -> IMClient,
+    /** files：这次会话的文件接口（演示会话用固定 token，账号会话用 AccountClient），没有时为 null。 */
+    val newClient: (isVisible: () -> Boolean, files: FileClient?) -> IMClient,
     val login: LoginApi,
     /** 和 account 用同一个存储：演示登录的 Session 由 App 写，账号的由 SDK 写。 */
     val sessions: SessionStore,
@@ -67,7 +72,16 @@ class AppDeps(
     val copySecret: (String) -> Boolean = copyText,
     /** 构建开关（build.gradle.kts）。和 GET /v1/config 的 demoLogin 同时为真才显示演示表单（F-ACC-07 规则 4）。 */
     val demoBuild: Boolean = BuildConfig.DEMO_LOGIN,
+    /** 图片和文件的接口（PRD-chat 第 13.1 节）：按会话建，null 表示不支持（测试的假依赖）。 */
+    val newFiles: (AccountSession) -> FileClient? = { null },
+    /** 测试替身：代替系统照片选择器、SAF（返回选中的 Uri，null 是取消）。正式运行为 null。 */
+    val pickForTest: ((PickKind) -> List<android.net.Uri>?)? = null,
+    /** 测试替身：代替 SAF 的"保存到"（返回目标 Uri，null 是取消）。正式运行为 null。 */
+    val saveForTest: ((name: String) -> android.net.Uri?)? = null,
 )
+
+/** 选什么：相册里的图片（照片选择器）、任意文件（SAF）、头像（单张图片）。 */
+enum class PickKind { IMAGES, FILES, AVATAR }
 
 /**
  * http、sessions 只有对真实服务端的端到端测试才换（丢响应、在落盘后杀进程）。
@@ -86,12 +100,19 @@ fun defaultDeps(context: Context, http: HttpTransport? = null, sessions: Session
     } catch (_: RuntimeException) {
         false
     }
+    var accountRef: AccountClient? = null
     return AppDeps(
-        newClient = { visible ->
+        newClient = { visible, files ->
             IMClient(
-                IMClientOptions(url = ws, platform = Platform.ANDROID, database = AndroidLocalDatabase.open(app), logger = AppLog, isVisible = visible, pushCursorStore = AndroidPushCursorStore(app)),
+                IMClientOptions(
+                    url = ws, platform = Platform.ANDROID, database = AndroidLocalDatabase.open(app), logger = AppLog, isVisible = visible, pushCursorStore = AndroidPushCursorStore(app),
+                    files = files,
+                    attachmentDir = File(app.filesDir, ATTACHMENT_DIR), // 沙盒副本：发出后删除，失败保留，退出登录清空（F-FILE-07 规则 2）
+                    fileCacheDir = File(app.cacheDir, FILE_CACHE_DIR), // 下载缓存，键 fileId + variant（F-FILE-04 规则 5）
+                ),
             )
         },
+        newFiles = { s -> FileClient(if (s.mode == SessionMode.DEMO) StaticTokenAuth(base, s.accessToken) else accountRef!!, OkHttpObjectTransport()) },
         login = DemoLoginApi(base),
         sessions = sessions,
         isOnline = { cm.getNetworkCapabilities(cm.activeNetwork)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true },
@@ -106,13 +127,15 @@ fun defaultDeps(context: Context, http: HttpTransport? = null, sessions: Session
                 http = http,
                 logger = AppLog,
             ),
-        ),
+        ).also { accountRef = it },
         bindAccountNetwork = { it.bindNetwork(app) },
         copyText = { clip(it, sensitive = false) },
         copySecret = { clip(it, sensitive = true) },
     )
 }
 
+const val ATTACHMENT_DIR = "tianting-attachments"
+const val FILE_CACHE_DIR = "tianting-files"
 private const val DEVICE_NAME_MAX = 60 // 服务端上限 64 个码点，取 60 个 UTF-16 单元不会超
 private const val EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE" // ClipDescription.EXTRA_IS_SENSITIVE，API 33 才有常量，老系统忽略这个键
 
@@ -194,6 +217,7 @@ class AppModel(context: Context, val deps: AppDeps) {
 
     init {
         prefs.remove(UiPrefs.LEGACY_PRIVACY_VERSION)
+        MediaOps.clearTemp(appContext) // 上次进程留下的临时副本（处理中被杀，D7）
         accountNetwork = deps.bindAccountNetwork(account)
         // 先开始收集再 start：events 没有回放，启动时刷新可能立刻结束会话。
         scope.launch(start = CoroutineStart.UNDISPATCHED) { account.events.collect { onAccountEvent(it) } }
@@ -240,8 +264,14 @@ class AppModel(context: Context, val deps: AppDeps) {
     private fun begin() {
         val s = account.session.value ?: return
         val isAccount = s.mode == SessionMode.ACCOUNT
-        val client = deps.newClient { foreground }
+        val files = deps.newFiles(s)
+        val client = deps.newClient({ foreground }, files)
         val session = ImSession(client, s.userId, isAccount, collator, deps.isOnline, toast::show, prefs, ::onRecoveryCodeUnacked)
+        if (files != null) {
+            session.media = MediaOps(appContext, client, session.scope)
+            session.files = files
+        }
+        session.filesFeature = { cachedConfig?.features?.files == true }
         session.start(deps.bindNetwork) { c -> if (isAccount) c.connect(account.tokenProvider) else c.connect(s.accessToken) }
         im = session
     }
@@ -415,7 +445,7 @@ class AppModel(context: Context, val deps: AppDeps) {
     /** 等 logout 响应时（最长 30 秒）被杀：token 已经清了，本地库还没清。下次启动没有会话时补上，否则缓存要留到下次登录。 */
     private fun finishInterruptedWipe() {
         if (prefs.get(UiPrefs.WIPE_PENDING) == null) return
-        val closing = closeLater(deps.newClient { foreground })
+        val closing = closeLater(deps.newClient({ foreground }, null))
         closingClient = closing
         teardown = scope.launch { closing.await() }
     }

@@ -177,11 +177,15 @@ private fun ConvSkeleton() {
     }
 }
 
-/** 摘要（F-UI-04 规则 5）：提示消息用服务端摘要；custom 和不认识的类型统一文案；被删除的不带前缀。 */
+/**
+ * 摘要（F-UI-04 规则 5）：提示消息用服务端摘要；图片"[图片]"、文件"[文件]"（不带文件名，F-FILE-02 规则 5、F-FILE-03 规则 5）；
+ * custom 和不认识的类型统一文案；被删除的不带前缀。
+ */
 internal fun summaryText(c: Conversation): String {
     val m = c.lastMsg ?: return ""
     if (m.deleted) return MESSAGE_DELETED
-    return if (m.type == MsgType.TEXT || m.type == MsgType.TIP) m.text.orEmpty() else "[暂不支持的消息]"
+    if (m.type == MsgType.TEXT || m.type == MsgType.TIP) return m.text.orEmpty()
+    return com.tianting.app.core.attachmentSummary(m.type) ?: "[暂不支持的消息]"
 }
 
 @Composable

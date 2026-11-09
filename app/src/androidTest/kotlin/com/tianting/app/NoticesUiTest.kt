@@ -275,7 +275,7 @@ class NoticesUiTest : UiTest() {
         inst.runOnMainSync { old.im!!.stop() }
         runBlocking { old.im!!.client.close() }
         server.inbox = listOf(old("p1", "上次的", 1), old("p2", "离线到的", 2))
-        replaceModel(newDeps { v -> com.tianting.sdk.IMClientOptions(url = "ws://fake/ws", transport = server, isVisible = v, pushCursorStore = memory) })
+        replaceModel(newDeps { v, _ -> com.tianting.sdk.IMClientOptions(url = "ws://fake/ws", transport = server, isVisible = v, pushCursorStore = memory) })
         scenarioRestart()
         rule.waitTag("tab-chats")
         openMe()

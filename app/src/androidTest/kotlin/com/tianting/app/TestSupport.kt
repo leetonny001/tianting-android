@@ -353,6 +353,8 @@ class FakeAccountHttp(var user: String = "alice") : HttpTransport {
 
     var registerMode = "open"
     var demoLogin = true
+    /** GET /v1/config 的 features.files（C2 图片和文件）。 */
+    var files = false
     var privacy: JsonObject? = null
     var eventsBody: JsonObject = obj("events" to emptyList<JsonObject>(), "otherSessions" to obj("count" to 0))
     private var nextGen = 2L
@@ -388,7 +390,7 @@ class FakeAccountHttp(var user: String = "alice") : HttpTransport {
 
     private fun configBody(): JsonObject {
         val m = linkedMapOf<String, Any?>(
-            "registerMode" to registerMode, "demoLogin" to demoLogin, "features" to obj("files" to false),
+            "registerMode" to registerMode, "demoLogin" to demoLogin, "features" to obj("files" to files),
             "limits" to obj("usernameMinLen" to 4, "usernameMaxLen" to 32, "passwordMinLen" to 8, "passwordMaxLen" to 128, "nicknameMaxLen" to 32, "deviceNameMaxLen" to 64),
         )
         privacy?.let { m["privacyNotice"] = it }
@@ -506,16 +508,41 @@ abstract class UiTest {
         ),
     )
 
-    fun newDeps(transport: Transport = server, clientOptions: (visible: () -> Boolean) -> IMClientOptions = { v -> IMClientOptions(url = "ws://fake/ws", transport = transport, isVisible = v) }) = AppDeps(
-        newClient = { visible -> IMClient(clientOptions(visible)) },
-        login = { u, n -> loginApi.login(u, n) },
-        sessions = sessions,
-        isOnline = { online },
-        bindNetwork = { null },
-        account = newAccount(),
-        copyText = { t -> if (copyWorks) copied.add(t) else false },
-        demoBuild = demoBuild,
-    )
+    /** 图片和文件的假依赖（FilesUiTest 设置）：对象存储、选择器、"保存到"。为 null 时没有文件接口。 */
+    var objects: com.tianting.sdk.ObjectTransport? = null
+    var pickForTest: ((com.tianting.app.core.PickKind) -> List<Uri>?)? = null
+    var saveForTest: ((String) -> Uri?)? = null
+
+    fun newDeps(
+        transport: Transport = server,
+        clientOptions: (visible: () -> Boolean, files: com.tianting.sdk.FileClient?) -> IMClientOptions = { v, f ->
+            IMClientOptions(
+                url = "ws://fake/ws", transport = transport, isVisible = v, files = f,
+                attachmentDir = java.io.File(testContext.filesDir, com.tianting.app.core.ATTACHMENT_DIR),
+                fileCacheDir = java.io.File(testContext.cacheDir, com.tianting.app.core.FILE_CACHE_DIR),
+            )
+        },
+    ): AppDeps {
+        val account = newAccount()
+        val objs = objects
+        return AppDeps(
+            newClient = { visible, f -> IMClient(clientOptions(visible, f)) },
+            login = { u, n -> loginApi.login(u, n) },
+            sessions = sessions,
+            isOnline = { online },
+            bindNetwork = { null },
+            account = account,
+            copyText = { t -> if (copyWorks) copied.add(t) else false },
+            demoBuild = demoBuild,
+            newFiles = { s ->
+                objs?.let { o ->
+                    com.tianting.sdk.FileClient(if (s.mode == SessionMode.DEMO) com.tianting.sdk.StaticTokenAuth("http://fake", s.accessToken, http) else account, o)
+                }
+            },
+            pickForTest = pickForTest,
+            saveForTest = saveForTest,
+        )
+    }
 
     /** 换掉 App 模型。旧的释放掉，它的线程和监听不留到下一个用例。 */
     fun replaceModel(deps: AppDeps) {

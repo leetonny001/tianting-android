@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# 启动本机测试服务端（测试模式 + 演示登录 + 邀请码注册 + 隐私说明 + 第二批功能 + 系统推送），模拟器用 10.0.2.2 访问。
+# 启动本机测试服务端（测试模式 + 演示登录 + 邀请码注册 + 隐私说明 + 第二批功能 + 系统推送 + 图片和文件），模拟器用 10.0.2.2 访问。
 #   scripts/test-server.sh start   编译并启动，密钥写到 build/test-server/env（每次随机，只给本机测试用，不进仓库）
 #   scripts/test-server.sh stop
+# 图片和文件（C2）：同时启动 scripts/fake_s3.py（只监听 127.0.0.1:$TT_S3_PORT），服务端 IM_FILES_ENABLED=1。预签名地址是
+# http://127.0.0.1:$TT_S3_PORT，模拟器要先 adb reverse 同一个端口（run-tests.sh 做）。TT_FILES=0 时不启动、不打开文件功能。
+# 其他 IM_* 环境变量（例如 IM_ACCESS_TTL=30s）原样传给服务端。
 # 服务端源码默认在同级目录 ../tianting-server/server 或 ../im-mvp/server，也可以用 TIANTING_SERVER_DIR 指定。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,12 +12,19 @@ dir="$root/build/test-server"
 port="${TT_PORT:-18280}"
 admin_port="${TT_ADMIN_PORT:-18281}"
 metrics_port="${TT_METRICS_PORT:-18282}"
+s3_port="${TT_S3_PORT:-18283}"
+files="${TT_FILES:-1}"
 
 stop() {
-  if [[ -f "$dir/pid" ]]; then
-    kill "$(cat "$dir/pid")" 2>/dev/null || true
-    rm -f "$dir/pid"
-  fi
+  for f in pid s3.pid; do
+    if [[ -f "$dir/$f" ]]; then
+      p="$(cat "$dir/$f")"
+      kill "$p" 2>/dev/null || true
+      # 等它真的退出（端口释放），否则紧接着的 start 会报端口被占用。最多 5 秒。
+      for _ in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+      rm -f "$dir/$f"
+    fi
+  done
 }
 
 case "${1:-}" in
@@ -25,10 +35,12 @@ esac
 
 stop
 # 同一台机器上可能有别的仓库的测试服务端：端口被占用时直接报错，不要连到别人的服务端上。
-if lsof -nP -iTCP:"$port" -sTCP:LISTEN > /dev/null 2>&1 || lsof -nP -iTCP:"$admin_port" -sTCP:LISTEN > /dev/null 2>&1 || lsof -nP -iTCP:"$metrics_port" -sTCP:LISTEN > /dev/null 2>&1; then
-  echo "端口 $port / $admin_port / $metrics_port 已被占用" >&2
-  exit 1
-fi
+for p in "$port" "$admin_port" "$metrics_port" "$s3_port"; do
+  if lsof -nP -iTCP:"$p" -sTCP:LISTEN > /dev/null 2>&1; then
+    echo "端口 $p 已被占用（$port / $admin_port / $metrics_port / $s3_port）" >&2
+    exit 1
+  fi
+done
 src="${TIANTING_SERVER_DIR:-}"
 if [[ -z "$src" ]]; then
   for c in "$root/../tianting-server/server" "$root/../im-mvp/server"; do
@@ -51,6 +63,29 @@ cat > "$callers" <<JSON
 JSON
 chmod 600 "$callers"
 
+file_env=()
+if [[ "$files" == "1" ]]; then
+  nohup python3 -I "$root/scripts/fake_s3.py" --port "$s3_port" > "$dir/s3.log" 2>&1 &
+  echo $! > "$dir/s3.pid"
+  for _ in $(seq 1 50); do
+    curl -fsS "http://127.0.0.1:$s3_port/__health" > /dev/null 2>&1 && break
+    sleep 0.1
+  done
+  # 凭证是假 S3 用的假值（不校验签名），不是真实密钥。
+  file_env=(
+    IM_FILES_ENABLED=1
+    "IM_OBJSTORE_ENDPOINT=http://127.0.0.1:$s3_port"
+    IM_OBJSTORE_REGION=us-east-1
+    IM_OBJSTORE_BUCKET=chat
+    IM_OBJSTORE_PUBLIC_BUCKET=avatars
+    "IM_OBJSTORE_PUBLIC_BASE_URL=http://127.0.0.1:$s3_port/avatars"
+    IM_OBJSTORE_ACCESS_KEY=android-e2e-access
+    IM_OBJSTORE_SECRET_KEY=android-e2e-not-a-secret
+    # 申请上传的频率（默认 60 次/分钟）调高：TC-FILE-04-10 的对方要连发 200 张图。可以用同名环境变量改。
+    "IM_UPLOAD_RATE=${IM_UPLOAD_RATE:-1000}"
+  )
+fi
+
 IM_ADDR="127.0.0.1:$port" \
 IM_ADMIN_ADDR="127.0.0.1:$admin_port" \
 IM_METRICS_ADDR="127.0.0.1:$metrics_port" \
@@ -66,7 +101,7 @@ IM_QUARANTINE_KEY="$(rnd)" \
 IM_JWT_SECRET="$(rnd)" \
 IM_ADMIN_KEY="$admin_key" \
 IM_ADMIN_CALLERS="$callers" \
-nohup "$dir/im-server" > "$dir/server.log" 2>&1 &
+nohup env ${file_env[@]+"${file_env[@]}"} "$dir/im-server" > "$dir/server.log" 2>&1 &
 echo $! > "$dir/pid"
 
 for _ in $(seq 1 100); do
@@ -79,6 +114,8 @@ TT_CALLER_SECRET=$caller_secret
 TT_PORT=$port
 TT_ADMIN_PORT=$admin_port
 TT_METRICS_PORT=$metrics_port
+TT_S3_PORT=$s3_port
+TT_FILES=$files
 ENV
     echo "test server ready on 127.0.0.1:$port (admin $admin_port)"
     exit 0

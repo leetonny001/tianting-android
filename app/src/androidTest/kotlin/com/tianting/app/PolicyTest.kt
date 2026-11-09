@@ -182,7 +182,7 @@ class LayoutScaleTest {
         lateinit var model: AppModel
         inst.runOnMainSync {
             clearUiPrefs()
-            model = AppModel(testContext, AppDeps({ v -> com.tianting.sdk.IMClient(com.tianting.sdk.IMClientOptions("ws://fake/ws", transport = server, isVisible = v)) }, { _, _ -> error("no") }, sessions, { true }, { null }, fakeAccount(sessions)))
+            model = AppModel(testContext, AppDeps({ v, _ -> com.tianting.sdk.IMClient(com.tianting.sdk.IMClientOptions("ws://fake/ws", transport = server, isVisible = v)) }, { _, _ -> error("no") }, sessions, { true }, { null }, fakeAccount(sessions)))
             testApp.model = model
         }
         rule.setContent {

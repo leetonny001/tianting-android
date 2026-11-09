@@ -5,4 +5,9 @@
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">10.0.2.2</domain>
     </domain-config>
+    <!-- 本机测试用的 http 对象存储（假 S3 / MinIO，F-FILE-01 规则 10 的 debug 例外）：scripts/test-server.sh 用 adb reverse
+         把模拟器的 127.0.0.1 端口转到 Mac，服务端签出来的地址和它自己访问的是同一个。release 不受影响。 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
 </network-security-config>

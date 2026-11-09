@@ -48,11 +48,11 @@ fun RequestsPage() {
     var busy by remember { mutableStateOf<String?>(null) }
     var detail by remember { mutableStateOf<FriendRequest?>(null) }
     val unseen = im.requests.unseen
-    LaunchedEffect(Unit) { runCatching { im.client.markFriendRequestsSeen() } }
+    LaunchedEffect(Unit) { runCatching { onMain { im.client.markFriendRequestsSeen() } } }
     LaunchedEffect(unseen) {
         if (unseen > 0) {
             delay(SEEN_DEBOUNCE_MS)
-            runCatching { im.client.markFriendRequestsSeen() }
+            runCatching { onMain { im.client.markFriendRequestsSeen() } }
         }
     }
     fun respond(userId: String, action: FriendAction) {

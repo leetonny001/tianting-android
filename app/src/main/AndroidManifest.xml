@@ -3,6 +3,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 只有 API 28 及以下保存图片到相册要（F-FILE-02 规则 9）；29 起用 MediaStore，不要权限。选图、选文件都不要存储权限（第 13.2 节）。 -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:name=".TiantingApplication"
@@ -31,5 +35,15 @@
                 <data android:scheme="tianting" />
             </intent-filter>
         </activity>
+        <!-- 下载的文件交给其他 App "打开"（F-FILE-03 规则 3）：只临时授权读下载缓存里的这一个文件。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>
