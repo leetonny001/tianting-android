@@ -550,13 +550,15 @@ class FilesE2eTest {
         assertTrue(File(testContext.cacheDir, com.tianting.app.core.FILE_CACHE_DIR).listFiles().orEmpty().isEmpty(), "下载缓存清空")
     }
 
-    @Test fun tc_file_07_10_purged_upload_resend_reuploads_expected_failure_h15() { // TC-FILE-07-10（Android）、AC-FILE-07-10：按 PRD 断言，现在的服务端回 4048（问题 H15、P-37）
-        val (a, bob, conv) = c2c()
+    /** 待发送的图片（send 被 4036 拒、已 complete、沙盒副本在），IM 钟推进 25 小时跑 file_purge 删掉上传行；返回旧 fileId 和 PUT 数。 */
+    private fun purgedReadyImage(a: String, bob: IMClient, conv: String): Pair<String, Int> {
         offThread { bob.block(a) } // send 被拒（4036）：已 complete 的待发送附件，沙盒副本还在
         pick(PickKind.IMAGES, TestMedia.write("wait.jpg", TestMedia.jpeg(100, 80)))
         until("failed 4036", 30_000) { appAttachments(conv).singleOrNull()?.status == MessageStatus.FAILED }
         val m = appAttachments(conv).single()
-        assertTrue(!m.body.image!!.fileId.isNullOrEmpty(), "已经 complete")
+        assertEquals(com.tianting.sdk.SendError.Code(4036), m.error)
+        val fileId = m.body.image!!.fileId
+        assertTrue(!fileId.isNullOrEmpty(), "已经 complete")
         assertEquals(1, sandbox().size)
         offThread { bob.unblock(a) }
         server.freezeClock(System.currentTimeMillis() + 25 * 3_600_000L)
@@ -565,20 +567,41 @@ class FilesE2eTest {
         } finally {
             server.freezeClock(null)
         }
+        return fileId!! to s3.stats().second
+    }
+
+    @Test fun tc_file_07_10_purged_upload_resend_reuploads_from_sandbox() { // TC-FILE-07-10（Android，有沙盒副本）、AC-FILE-07-10（v1.4，P-37 ①②）
+        val (a, bob, conv) = c2c()
+        val (oldFileId, putsBefore) = purgedReadyImage(a, bob, conv)
         tapRetry()
-        // PRD 规则 4：send 回 4096，有沙盒副本的重新上传后发送成功。等到不再是第一次的 4036。
+        // 清理后 send 回 4048（上传行已删，问题 H15）；自己上传的 fileId 按已清理处理：回到上传中，用沙盒副本重新上传后发送成功。
         until("retry settled", 30_000) {
             val now = appAttachments(conv).single()
             now.status == MessageStatus.SENT || (now.status == MessageStatus.FAILED && now.error != com.tianting.sdk.SendError.Code(4036))
         }
         val after = appAttachments(conv).single()
         android.util.Log.i("TC-FILE-07-10", "status ${after.status} error ${(after.error as? com.tianting.sdk.SendError.Code)?.code ?: after.error}") // 只有状态和错误码
-        if (after.status == MessageStatus.SENT) {
-            until("bob got") { peerMessages(bob, conv, MsgType.IMAGE).isNotEmpty() }
-            throw AssertionError("H15 已经不复现：服务端回了 4096，App 重新上传后发送成功。按 PRD 通过，请把这条用例改成普通断言")
+        assertEquals(MessageStatus.SENT, after.status, "重新上传后发送成功（error ${after.error}）")
+        val newFileId = after.body.image!!.fileId
+        assertTrue(!newFileId.isNullOrEmpty() && newFileId != oldFileId, "新的 fileId")
+        assertEquals(putsBefore + 2, s3.stats().second, "从头重新上传了原图和缩略图")
+        until("bob got") { peerMessages(bob, conv, MsgType.IMAGE).any { it.body.image?.fileId == newFileId } }
+        assertEquals(1, peerMessages(bob, conv, MsgType.IMAGE).size, "对方只收到一条")
+        until("sandbox copy deleted", 10_000) { sandbox().isEmpty() }
+    }
+
+    @Test fun tc_file_07_10_purged_upload_without_sandbox_copy_says_source_missing() { // TC-FILE-07-10（Android，没有沙盒副本）、AC-FILE-07-10
+        val (a, bob, conv) = c2c()
+        val (_, putsBefore) = purgedReadyImage(a, bob, conv)
+        sandbox().forEach { it.deleteRecursively() } // 沙盒副本没了
+        tapRetry()
+        until("source missing", 30_000) {
+            val now = appAttachments(conv).single()
+            now.status == MessageStatus.FAILED && now.error == com.tianting.sdk.SendError.SourceMissing
         }
-        // 现状（H15）：服务端回 4048，SDK 只对 4096 重新上传，消息失败。
-        assertEquals(com.tianting.sdk.SendError.Code(4048), after.error, "现在的服务端回 4048（H15）")
+        ui.waitText(com.tianting.app.core.SOURCE_MISSING)
+        assertEquals(putsBefore, s3.stats().second, "没有重新上传")
+        assertTrue(peerMessages(bob, conv, MsgType.IMAGE).isEmpty())
     }
 
     @Test fun tc_acc_06_06_avatar_crop_upload_512_and_shown() { // AC-ACC-06-6（Android）；问题 H13（SDK 改头像后重新拉自己的资料）

@@ -407,8 +407,9 @@ internal fun AttachmentStatus(m: Message, convId: String) {
     val im = LocalIm.current
     val pct = im.media?.progress?.get(m.clientMsgId)
     val text = when (m.status) {
-        MessageStatus.PROCESSING -> "处理中…"
-        MessageStatus.UPLOADING -> if (pct != null) "上传中 $pct%" else "上传中…"
+        // 文案同 PRD-chat v1.4 F-FILE-07 规则 9 和 H5："处理中""上传中 N%"（还没有进度时只显示"上传中"）。
+        MessageStatus.PROCESSING -> "处理中"
+        MessageStatus.UPLOADING -> if (pct != null) "上传中 $pct%" else "上传中"
         MessageStatus.QUEUED -> "等待发送"
         MessageStatus.FAILED -> attachmentErrorText(m)
         else -> ""
