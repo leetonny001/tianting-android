@@ -4,6 +4,7 @@
 #   scripts/test-server.sh stop
 # 图片和文件（C2）：同时启动 scripts/fake_s3.py（只监听 127.0.0.1:$TT_S3_PORT），服务端 IM_FILES_ENABLED=1。预签名地址是
 # http://127.0.0.1:$TT_S3_PORT，模拟器要先 adb reverse 同一个端口（run-tests.sh 做）。TT_FILES=0 时不启动、不打开文件功能。
+# TT_S3_ORIGINS：假 S3 的 CORS 放行的源（逗号分隔，默认不放行；FE-640 跨端用例里 H5 的页面也连这个服务端）。
 # 其他 IM_* 环境变量（例如 IM_ACCESS_TTL=30s）原样传给服务端。
 # 服务端源码默认在同级目录 ../tianting-server/server 或 ../im-mvp/server，也可以用 TIANTING_SERVER_DIR 指定。
 set -euo pipefail
@@ -65,7 +66,7 @@ chmod 600 "$callers"
 
 file_env=()
 if [[ "$files" == "1" ]]; then
-  nohup python3 -I "$root/scripts/fake_s3.py" --port "$s3_port" > "$dir/s3.log" 2>&1 &
+  nohup python3 -I "$root/scripts/fake_s3.py" --port "$s3_port" --origins "${TT_S3_ORIGINS:-}" > "$dir/s3.log" 2>&1 &
   echo $! > "$dir/s3.pid"
   for _ in $(seq 1 50); do
     curl -fsS "http://127.0.0.1:$s3_port/__health" > /dev/null 2>&1 && break

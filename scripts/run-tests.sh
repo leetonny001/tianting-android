@@ -6,6 +6,8 @@
 #   scripts/run-tests.sh shots               截图巡检，PNG 拉到 shots/
 #   scripts/run-tests.sh class <类或类#方法>  只跑指定用例
 # 设备用 ANDROID_SERIAL 选（默认 adb 唯一的设备，有多台时报错）。
+# TT_SERVER_RUNNING=1：e2e、kill 用已经由 scripts/test-server.sh start 起好的服务端（读 build/test-server/env），结束时不停它
+#   （FE-640 跨端用例：三端轮流连同一个服务端）。TT_XP、TT_XP_FROM 原样作为 ttXp、ttXpFrom 传给用例（CrossPlatformE2e）。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
@@ -43,17 +45,19 @@ instrument() { # 其余参数原样传给 am instrument；有失败或进程崩�
 # 用 adb reverse 转到 Mac（只碰 ANDROID_SERIAL 指定的设备），结束时撤掉。
 e2e_args=()
 start_server() {
-  scripts/test-server.sh start
+  if [[ "${TT_SERVER_RUNNING:-0}" != "1" ]]; then scripts/test-server.sh start; fi
   # shellcheck disable=SC1091
   source build/test-server/env
   if [[ "${TT_FILES:-0}" == "1" ]]; then
     $adb reverse "tcp:$TT_S3_PORT" "tcp:$TT_S3_PORT" > /dev/null
   fi
   e2e_args=(-e ttAdminKey "$TT_ADMIN_KEY" -e ttCallerId "$TT_CALLER_ID" -e ttCallerSecret "$TT_CALLER_SECRET" -e ttAdminUrl "http://10.0.2.2:$TT_ADMIN_PORT" -e ttMetricsUrl "http://10.0.2.2:$TT_METRICS_PORT/metrics" -e ttS3Url "http://127.0.0.1:${TT_S3_PORT:-0}" -e ttFiles "${TT_FILES:-0}")
+  if [[ -n "${TT_XP:-}" ]]; then e2e_args+=(-e ttXp "$TT_XP"); fi
+  if [[ -n "${TT_XP_FROM:-}" ]]; then e2e_args+=(-e ttXpFrom "$TT_XP_FROM"); fi
 }
 stop_server() {
   if [[ -n "${TT_S3_PORT:-}" ]]; then $adb reverse --remove "tcp:$TT_S3_PORT" > /dev/null 2>&1 || true; fi
-  scripts/test-server.sh stop
+  if [[ "${TT_SERVER_RUNNING:-0}" != "1" ]]; then scripts/test-server.sh stop; fi
 }
 
 case "${1:-}" in

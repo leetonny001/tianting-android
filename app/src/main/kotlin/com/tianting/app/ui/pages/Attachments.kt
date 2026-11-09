@@ -163,7 +163,7 @@ internal fun ImageContent(m: Message, onOpen: () -> Unit) {
                     color = Tt.colors.brand,
                 )
                 is ImageLoad.Ready -> {
-                    DecodedImage(load.file, "${img.fileId}:thumb", Modifier.fillMaxSize().clickable(onClick = onOpen), ContentScale.Crop, "image-loaded")
+                    DecodedImage(load.file, "${img.fileId}:thumb", Modifier.fillMaxSize().semantics { contentDescription = "图片" }.clickable(onClick = onOpen) /* 能点的缩略图自己也要有名字（AC-CHAT-90-9，FE-640 发现） */, ContentScale.Crop, "image-loaded")
                     if (img.mime == "image/gif") {
                         // Android 第一批显示首帧加"GIF"标记（F-FILE-02 规则 4，不加依赖）
                         T(

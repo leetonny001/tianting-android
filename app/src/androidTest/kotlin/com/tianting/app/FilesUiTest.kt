@@ -265,4 +265,82 @@ class FilesUiTest : UiTest() {
         assertFalse(rule.hasText("暂不支持", substring = true))
         assertTrue(rule.hasTag("image-thumb") && !rule.hasText("[暂不支持的消息]"))
     }
+
+    // ---- AC-CHAT-90-8、90-9（FE-640）：文件页面的可读名称、浅色和深色 ----
+
+    /** button-name 的等价检查（同 AccountUiTest，问题 A10：没有 espresso-accessibility，不新增依赖）：能点的节点都要有名字。 */
+    private fun assertClickablesHaveNames(where: String) {
+        fun walk(n: androidx.compose.ui.semantics.SemanticsNode, out: MutableList<androidx.compose.ui.semantics.SemanticsNode>) {
+            out.add(n)
+            n.children.forEach { walk(it, out) }
+        }
+        val all = ArrayList<androidx.compose.ui.semantics.SemanticsNode>()
+        // 全屏查看、弹窗是另一个窗口（另一个根）：每个根都查
+        rule.onAllNodes(isRoot(), useUnmergedTree = false).fetchSemanticsNodes().forEach { walk(it, all) }
+        var clickable = 0
+        for (node in all) {
+            if (node.config.getOrNull(androidx.compose.ui.semantics.SemanticsActions.OnClick) == null) continue
+            if (node.config.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.EditableText) != null) continue
+            clickable++
+            val named = node.config.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.Text)?.isNotEmpty() == true ||
+                node.config.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.ContentDescription)?.isNotEmpty() == true
+            assertTrue(named, "$where: 能点的节点没有名字：${node.config}")
+        }
+        assertTrue(clickable > 0, "$where: 没有找到能点的节点")
+    }
+
+    /** 截图放到 App 的外部文件目录 shots/（同 ScreenshotTour），由 adb pull 取出人工看。 */
+    private fun shot(name: String) {
+        rule.waitForIdle()
+        Thread.sleep(400)
+        val dir = java.io.File(testContext.getExternalFilesDir(null), "shots").apply { mkdirs() }
+        val bmp = inst.uiAutomation.takeScreenshot()
+        java.io.FileOutputStream(java.io.File(dir, "$name.png")).use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
+    private fun filesPagesNamed(prefix: String, pref: com.tianting.app.ui.theme.ThemePref) {
+        objs.bodies["F8/thumb"] = TestMedia.jpeg(400, 300, android.graphics.Color.rgb(40, 160, 60))
+        objs.bodies["F8/original"] = TestMedia.jpeg(400, 300, android.graphics.Color.rgb(40, 160, 60))
+        objs.bodies["F7/original"] = "%PDF-1.7\n".toByteArray()
+        withBob(imageMsg(1, "F8"), fileMsg(2, "F7", "报告.pdf", mime = "application/pdf"), msgJson(BOB_CONV, 3, "bob", "之后"))
+        openChat()
+        inst.runOnMainSync { model.setTheme(pref) }
+        rule.waitText("之后")
+        rule.waitTag("image-loaded", 10_000)
+        // 替代文本：图片读"图片"，文件读文件名和大小（第 13.4 节、FE-640 内容 4）
+        rule.onAllNodes(hasContentDescription("图片"), useUnmergedTree = true).fetchSemanticsNodes().let { assertTrue(it.isNotEmpty(), "图片有替代文本") }
+        n("file-bubble").assertContentDescriptionContains("文件 报告.pdf，2 KB")
+        assertClickablesHaveNames("$prefix 聊天页（图片、文件气泡）")
+        shot("$prefix-files-01-chat")
+        click("attach-button")
+        rule.waitTag("attach-panel")
+        assertClickablesHaveNames("$prefix \"+\"面板")
+        shot("$prefix-files-02-plus")
+        click("attach-button")
+        click("image-loaded")
+        rule.waitTag("viewer-image", 10_000)
+        assertClickablesHaveNames("$prefix 全屏查看")
+        shot("$prefix-files-03-viewer")
+        click("viewer-close")
+        click("file-download")
+        rule.waitTag("source-dialog")
+        assertClickablesHaveNames("$prefix 来源提示")
+        shot("$prefix-files-04-source")
+        pressBackOnce()
+        // 失败状态：4292 的失败图标和原因
+        http.err("/v1/files/uploads", 429, 4292)
+        pickImage()
+        rule.waitTag("attachment-error", 10_000)
+        assertClickablesHaveNames("$prefix 发送失败")
+        shot("$prefix-files-05-failed")
+    }
+
+    private fun pressBackOnce() {
+        androidx.test.espresso.Espresso.pressBackUnconditionally()
+        rule.waitForIdle()
+    }
+
+    @Test fun tc_chat_90_08_files_pages_named_light() = filesPagesNamed("light", com.tianting.app.ui.theme.ThemePref.LIGHT) // TC-CHAT-90-08、AC-CHAT-90-8、90-9
+
+    @Test fun tc_chat_90_08_files_pages_named_dark() = filesPagesNamed("dark", com.tianting.app.ui.theme.ThemePref.DARK) // TC-CHAT-90-08、AC-CHAT-90-8、90-9
 }
