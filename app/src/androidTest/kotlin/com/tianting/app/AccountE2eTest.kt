@@ -825,16 +825,16 @@ class AccountE2eTest {
         try {
             ui.waitTag("kicked-ok", 20_000)
             ui.waitText("登录已失效，请重新登录")
-            // 到期之后再等 3 秒（问题 F2 已在服务端修复）：没有成功的刷新，也没有重新连上。服务端在上限那一秒踢
-            // `tokenExpired`（JWT 的 exp 只到秒）时 App 最多问一次，服务端按到期拒绝（401 / 4019）。
+            // 到期之后再等 3 秒（F2 服务端已修；P-35 L1：access 到期等于上限时收到 kicked/tokenExpired，SDK 直接登录失效）：
+            // 一次刷新请求都没有，也没有重新连上。
             Thread.sleep(3000)
         } finally {
             watching.set(false)
             watcher.join()
         }
         android.util.Log.i("TC-ACC-03-45", "refresh answers ${http.answers}, states $states") // 只有状态码和错误码
-        assertTrue(http.count.get() <= 1, "到期前后最多一次被拒绝的刷新：${http.answers}")
-        assertTrue(http.answers.all { it == "401/4019" }, "刷新都被按到期拒绝：${http.answers}")
+        assertEquals(0, http.count.get(), "到期前后都不刷新：${http.answers}")
+        assertEquals(emptyList<String>(), http.answers.toList(), "没有刷新的响应")
         val firstDown = states.indexOfFirst { it != ConnState.CONNECTED }
         assertTrue(firstDown >= 0 && states.drop(firstDown).none { it == ConnState.CONNECTED }, "到期后不重连：$states")
         assertTrue(ui.hasTag("kicked-ok"))
