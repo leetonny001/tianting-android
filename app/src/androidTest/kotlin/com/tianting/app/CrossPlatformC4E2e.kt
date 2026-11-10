@@ -80,12 +80,16 @@ class CrossPlatformC4E2e {
         ui.openApp()
         ui.waitTag("login-username")
         ui.type("login-username", u)
-        val end = System.currentTimeMillis() + 30_000
+        val start = System.currentTimeMillis()
+        val end = start + 30_000
+        var submits = 0
+        var configRetries = 0
         while (!ui.hasTag("tab-chats") && System.currentTimeMillis() < end) {
-            if (ui.hasTag("config-retry")) runCatching { ui.tap("config-retry") }
-            if (ui.hasTag("login-submit")) runCatching { rule.onNodeWithTag("login-submit", useUnmergedTree = true).performClick() }
+            if (ui.hasTag("config-retry")) runCatching { ui.tap("config-retry"); configRetries++ }
+            if (ui.hasTag("login-submit")) runCatching { rule.onNodeWithTag("login-submit", useUnmergedTree = true).performClick(); submits++ }
             Thread.sleep(700)
         }
+        android.util.Log.i("TT-E2E-LOGIN", "CrossPlatformC4E2e ms=${System.currentTimeMillis() - start} submits=$submits configRetries=$configRetries")
         ui.waitTag("tab-chats", 15_000)
         rule.waitUntil(15_000) { model.im?.state == ConnState.CONNECTED }
         rule.waitUntil(15_000) { model.im?.msgActions == true }

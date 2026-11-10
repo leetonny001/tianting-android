@@ -88,13 +88,18 @@ class C4E2eTest {
         ui.openApp()
         ui.waitTag("login-username")
         ui.type("login-username", u)
-        val end = System.currentTimeMillis() + 30_000
+        val start = System.currentTimeMillis()
+        val end = start + 30_000
+        var submits = 0
+        var configRetries = 0
         while (!ui.hasTag("tab-chats") && System.currentTimeMillis() < end) {
-            if (ui.hasTag("config-retry")) runCatching { ui.tap("config-retry") } // 配置请求失败（上一个用例刚断过网）：重试
+            if (ui.hasTag("config-retry")) runCatching { ui.tap("config-retry"); configRetries++ } // 配置请求失败（上一个用例刚断过网）：重试
             runCatching { if (ui.hasTag("login-username") && ui.textOf("login-username") != u) ui.type("login-username", u) } // 登录成功、页面换掉的瞬间可能找不到节点
-            if (ui.hasTag("login-submit")) runCatching { rule.onNodeWithTag("login-submit", useUnmergedTree = true).performClick() }
+            if (ui.hasTag("login-submit")) runCatching { rule.onNodeWithTag("login-submit", useUnmergedTree = true).performClick(); submits++ }
             Thread.sleep(700)
         }
+        // 重试会把慢登录藏起来：每次记下用时和点了几次（只有数字，不带用户名），FE-672 报告据此判断（logcat 标签 TT-E2E-LOGIN）。
+        android.util.Log.i("TT-E2E-LOGIN", "C4E2eTest ms=${System.currentTimeMillis() - start} submits=$submits configRetries=$configRetries")
         try {
             ui.waitTag("tab-chats", 5_000)
         } catch (e: Throwable) {
