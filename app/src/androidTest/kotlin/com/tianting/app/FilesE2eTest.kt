@@ -304,23 +304,32 @@ class FilesE2eTest {
 
     @Test fun tc_file_02_06_placeholder_keeps_next_message_still() { // TC-FILE-02-06、AC-FILE-02-6
         val (_, bob, conv) = c2c()
-        peerImage(bob, conv, TestMedia.jpeg(4000, 3000, Color.BLUE), TestMedia.jpeg(480, 360, Color.BLUE), 4000, 3000)
+        // 先调慢再让对方发图（问题 74）：c2c() 已经打开了聊天页，图片一到 App 就去取缩略图，调慢晚了缩略图已经按正常速度取完，看不到"加载中"。
+        // 假 S3 每写完 16 KiB 才等一次：纯色的 480×360 缩略图只有约 1.8 KB，一块就写完，调慢不起作用；用噪点图（远大于 16 KiB）。
+        s3.ctl("get_chunk_ms" to 1500) // 缩略图慢慢到
+        val noise = android.graphics.Bitmap.createBitmap(480, 360, android.graphics.Bitmap.Config.ARGB_8888)
+        val rnd = java.util.Random(6)
+        for (y in 0 until 360) for (x in 0 until 480) noise.setPixel(x, y, Color.rgb(rnd.nextInt(256), rnd.nextInt(256), rnd.nextInt(256)))
+        val thumb = TestMedia.encode(noise)
+        check(thumb.size > 3 * 16 * 1024) { "缩略图太小，调慢不起作用：${thumb.size}" }
+        peerImage(bob, conv, TestMedia.jpeg(4000, 3000, Color.BLUE), thumb, 4000, 3000)
         offThread { bob.send(conv, "图片下面的一条") }
         open("/chats")
-        s3.ctl("get_chunk_ms" to 1500) // 缩略图慢慢到
         open(chatPath(conv))
         ui.waitText("图片下面的一条")
         ui.waitTag("image-loading")
         val next = { rule.onNode(hasTestTag("message") and hasAnyDescendant(hasText("图片下面的一条")), useUnmergedTree = true).getUnclippedBoundsInRoot() }
         val before = next()
+        // 量"之前"的位置时还在加载（占位在、图还没到），否则下面"没有移动"比的是加载完之后的两次位置（问题 74）
+        assertTrue(ui.hasTag("image-loading") && !ui.hasTag("image-loaded"), "量位置时缩略图已经到了")
         rule.waitUntil(30_000) { ui.hasTag("image-loaded") }
         rule.waitForIdle()
         val after = next()
         val dy = kotlin.math.abs((after.top - before.top).value)
         assertTrue(dy <= 1f, "下一条消息移动了 $dy dp")
-        val thumb = rule.onNodeWithTag("image-thumb", useUnmergedTree = true).getUnclippedBoundsInRoot()
-        assertEquals(200f, thumb.width.value, 0.6f, "按宽高比占位（4000×3000 → 200×150）")
-        assertEquals(150f, thumb.height.value, 0.6f)
+        val box = rule.onNodeWithTag("image-thumb", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        assertEquals(200f, box.width.value, 0.6f, "按宽高比占位（4000×3000 → 200×150）")
+        assertEquals(150f, box.height.value, 0.6f)
     }
 
     @Test fun tc_file_02_09_lazy_thumbs_and_04_10_cache_200() { // TC-FILE-02-09、AC-FILE-02-9、TC-FILE-04-10、AC-FILE-04-10
