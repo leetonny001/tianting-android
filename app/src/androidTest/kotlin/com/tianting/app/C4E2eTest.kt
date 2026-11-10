@@ -279,10 +279,12 @@ class C4E2eTest {
         users(a to a, b to b)
         val conv = com.tianting.sdk.c2cConvId(a, b)
         val me = peer(a)
+        // "N 秒前"按服务端时间推算（问题 72）：用对方 SDK 校正后的服务端时间（auth ack 的 serverTime），不用设备时钟。
+        // 模拟器时钟和服务端所在的 Mac 差几秒时（实测慢 9 秒），按设备时钟冻结的"112 秒前"按服务端算已经超过 2 分钟。
         try {
-            server.freezeClock(System.currentTimeMillis() - 125_000)
+            server.freezeClock(me.serverNow() - 125_000)
             say(me, conv, "125 秒前")
-            server.freezeClock(System.currentTimeMillis() - 112_000)
+            server.freezeClock(me.serverNow() - 112_000)
             say(me, conv, "112 秒前")
         } finally {
             server.freezeClock(null)

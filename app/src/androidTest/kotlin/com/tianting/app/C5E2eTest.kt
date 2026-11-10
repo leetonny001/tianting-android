@@ -33,7 +33,6 @@ import org.junit.Test
 import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** C5 端到端的公共部分（C5E2eTest、C5KillE2e）：真实 im-server（IM_CONV_SETTINGS_ENABLED=1）、对方和"自己的另一台设备"是同一进程里的 IMClient。 */
@@ -317,7 +316,8 @@ class C5E2eTest {
         val t = System.currentTimeMillis()
         rule.waitUntil(2000) { !r.hasItem(conv) }
         android.util.Log.i("TT-E2E-C5", "delete app ms=${System.currentTimeMillis() - t}")
-        assertNull(model.im!!.drafts[conv], "D2 的草稿也清除（frontend-chat 第 55 条）")
+        // D2 的草稿也清除（frontend-chat 第 55 条）：SDK 先更新列表再发 ConvDeleted，同样在 2 秒内
+        r.until("D2 的草稿清除", (2000 - (System.currentTimeMillis() - t)).coerceAtLeast(0)) { model.im!!.drafts[conv] == null }
         assertTrue(model.im!!.client.messages(conv).none { it.body.text == secret }, "内存里没有")
         r.until("本地库里搜不到", 15_000) { r.dbFiles().none { r.contains(it, secret) } }
     }
@@ -388,7 +388,8 @@ class C5E2eTest {
         // 确认：会话消失；草稿、失败消息、沙盒副本、缓存文件都没有了
         r.delete(conv)
         rule.waitUntil(5000) { !r.hasItem(conv) }
-        assertNull(model.im!!.drafts[conv])
+        // 会话在 ack 之前就隐藏（SDK 乐观更新），草稿在 ack 之后的 ConvDeleted 里清：等它，不是马上就有
+        r.until("草稿清除", 5000) { model.im!!.drafts[conv] == null }
         r.until("失败消息清除") { model.im!!.client.messages(conv).isEmpty() }
         r.until("缓存目录搜不到", 15_000) { r.cacheFiles().none { r.contains(it, marker) } }
         r.until("沙盒副本清除", 15_000) { r.sandbox().isEmpty() }
