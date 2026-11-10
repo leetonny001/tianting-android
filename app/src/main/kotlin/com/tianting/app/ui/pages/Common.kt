@@ -98,6 +98,18 @@ fun rememberDisplayName(userId: String): String {
     return LocalIm.current.nameOf(userId)
 }
 
+/**
+ * 撤回文案（PRD-chat F-RCL-02 规则 1a 的表，聊天页提示行和会话列表摘要同一张表）：判断数据来自 SDK（recallNotice），
+ * 显示名按本端规则（备注 → 昵称 → userId），资料到了再替换。
+ */
+@Composable
+fun rememberRecallText(notice: com.tianting.sdk.RecallNotice): String {
+    rememberProfile(notice.operator)
+    if (notice.sender != notice.operator) rememberProfile(notice.sender)
+    val im = LocalIm.current
+    return com.tianting.sdk.recallText(notice) { im.nameOf(it) }
+}
+
 /** 本地关系（社交状态变化时重新计算）；SDK 的接口是 suspend，还没取到时为 null。 */
 @Composable
 fun rememberRelation(userId: String): Relation? {

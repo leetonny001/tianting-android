@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -141,7 +142,8 @@ private fun DecodedImage(file: File, key: String, modifier: Modifier, scale: Con
 
 /** 图片气泡（F-FILE-02 规则 6）：按宽高预留占位，先显示缩略图，点击全屏看原图。 */
 @Composable
-internal fun ImageContent(m: Message, onOpen: () -> Unit) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+internal fun ImageContent(m: Message, onLongClick: (() -> Unit)? = null, onOpen: () -> Unit) {
     val img = m.body.image ?: return
     val (w, h) = displaySize(img.width, img.height)
     var retry by remember { mutableIntStateOf(0) }
@@ -163,7 +165,7 @@ internal fun ImageContent(m: Message, onOpen: () -> Unit) {
                     color = Tt.colors.brand,
                 )
                 is ImageLoad.Ready -> {
-                    DecodedImage(load.file, "${img.fileId}:thumb", Modifier.fillMaxSize().semantics { contentDescription = "图片" }.clickable(onClick = onOpen) /* 能点的缩略图自己也要有名字（AC-CHAT-90-9，FE-640 发现） */, ContentScale.Crop, "image-loaded")
+                    DecodedImage(load.file, "${img.fileId}:thumb", Modifier.fillMaxSize().semantics { contentDescription = "图片" }.combinedClickable(onLongClickLabel = "消息操作", onLongClick = onLongClick, onClick = onOpen) /* 能点的缩略图自己也要有名字（AC-CHAT-90-9，FE-640 发现） */, ContentScale.Crop, "image-loaded")
                     if (img.mime == "image/gif") {
                         // Android 第一批显示首帧加"GIF"标记（F-FILE-02 规则 4，不加依赖）
                         T(
@@ -285,7 +287,8 @@ private fun MediaOpsNoSpace(e: Throwable) = com.tianting.app.core.MediaOps.isNoS
 
 /** 文件气泡（F-FILE-03 规则 3）：类型标签、文件名（纯文本，中间省略）、大小；下载有进度、可取消，下载后"打开"（白名单）和"保存"。 */
 @Composable
-internal fun FileContent(m: Message, mine: Boolean, convId: String) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+internal fun FileContent(m: Message, mine: Boolean, convId: String, onLongClick: (() -> Unit)? = null) {
     val im = LocalIm.current
     val app = LocalApp.current
     val context = LocalContext.current
@@ -316,7 +319,11 @@ internal fun FileContent(m: Message, mine: Boolean, convId: String) {
     ) {
         Row(
             Modifier.fillMaxWidth().then(
-                if (!body.expired && body.fileId.isNotEmpty() && (state == null || state == DownloadState.Failed)) Modifier.clickable { start() } else Modifier,
+                if (!body.expired && body.fileId.isNotEmpty() && (state == null || state == DownloadState.Failed)) {
+                    Modifier.combinedClickable(onLongClickLabel = "消息操作", onLongClick = onLongClick) { start() }
+                } else {
+                    Modifier
+                },
             ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),

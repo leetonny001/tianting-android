@@ -56,6 +56,17 @@ python3 -I tools/ac_coverage/coverage.py ../tianting-server/docs/prd/PRD-ui-v1.0
 
 `scripts/test-server.sh` 同时启动假 S3（`127.0.0.1:18283`，只用标准库），服务端 `IM_FILES_ENABLED=1`；`run-tests.sh` 用 `adb reverse` 把模拟器的同一端口转到 Mac，debug 的网络安全配置只多放行 `127.0.0.1` 的明文（F-FILE-01 规则 10）。`TT_FILES=0` 关掉。
 
+## 撤回、引用、@（C4）
+
+服务端 `GET /v1/config` 的 `features.msgActions` 打开才有（关闭时消息菜单只有"复制"和失败消息的"重发""删除"）。菜单项来自 SDK 的 `messageActions`（撤回按 `ts` 和校正后的服务端时间），长按时现算；撤回、删除的提示行没有菜单。撤回文案用 SDK 的 `recallNotice` + `recallText`（聊天页和列表摘要同一张表）；正在全屏看、正在下载的那条被撤回时关闭全屏 / 中止下载并提示"该消息已被撤回"。引用条只记 msgId，按纯文本显示；点击引用 200 条以内翻页跳转。@ 的输入模型在 `core/Mentions.kt`（文本 + 区间，组字中不改模型，退格整段删除），成员选择是底部面板（`searchGroupMembers`）；草稿结构化（文字、@、引用，只在内存）。
+
+`scripts/test-server.sh` 默认 `IM_MSG_ACTIONS_ENABLED=1`；`run-tests.sh` 的 e2e 还把服务端端口 `adb reverse` 到模拟器（`ttImLoopback`），对方的 IMClient 走这条路，App 开飞行模式时它不断。`TT_SERVER_STATE_DIR` 可以把服务端二进制、库、日志放到仓库外。
+
+```bash
+scripts/run-tests.sh e2e com.tianting.app.C4E2eTest      # 撤回、引用、@ 对真实 im-server
+scripts/run-tests.sh kill C4KillE2e.recallWhileKilled    # App 被杀时被撤回（AC-RCL-03-4）
+```
+
 ## 系统通知
 
 `scripts/test-server.sh` 打开 `IM_PUSH_ENABLED`。推送游标在 no-backup 目录的文件里（`AndroidPushCursorStore`），退出、被踢、库重建都不清；`ui.noticeSeen.{userId}` 只有一个数字，退出登录时删除，被踢时不删。列表只在内存，重启后为空，页面底部有说明（PRD-live F-PUSH-12 规则 6）。

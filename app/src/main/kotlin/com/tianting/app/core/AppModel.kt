@@ -268,10 +268,11 @@ class AppModel(context: Context, val deps: AppDeps) {
         val client = deps.newClient({ foreground }, files)
         val session = ImSession(client, s.userId, isAccount, collator, deps.isOnline, toast::show, prefs, ::onRecoveryCodeUnacked)
         if (files != null) {
-            session.media = MediaOps(appContext, client, session.scope)
+            session.media = MediaOps(appContext, client, session.scope, toast::show)
             session.files = files
         }
         session.filesFeature = { cachedConfig?.features?.files == true }
+        session.msgActionsFeature = { cachedConfig?.features?.msgActions == true }
         session.start(deps.bindNetwork) { c -> if (isAccount) c.connect(account.tokenProvider) else c.connect(s.accessToken) }
         im = session
     }

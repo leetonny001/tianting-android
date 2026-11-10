@@ -473,6 +473,72 @@ class FilesE2eTest {
         assertEquals(TestMedia.sha256(body), TestMedia.sha256(f))
     }
 
+    // ---- C4（FE-667）：撤回时正在全屏看、正在下载；引用图片和文件 ----
+
+    @Test fun tc_rcl_03_08_viewer_closes_when_peer_recalls_the_image() { // TC-RCL-03-08、AC-RCL-03-8（真实服务端 + 假 S3）
+        val (_, bob, conv) = c2c()
+        rule.waitUntil(15_000) { model.im?.msgActions == true }
+        val m = peerImage(bob, conv, TestMedia.jpeg(800, 600, Color.BLUE), TestMedia.jpeg(400, 300, Color.BLUE), 800, 600)
+        ui.waitTag("image-loaded", 15_000)
+        rule.onAllNodesWithTag("image-loaded", useUnmergedTree = true)[0].performClick()
+        ui.waitTag("viewer-image", 15_000)
+        offThread { bob.recall(conv, m.msgId!!) }
+        rule.waitUntil(5000) { !ui.hasTag("image-viewer") }
+        ui.waitText("该消息已被撤回", 3000)
+        ui.waitText("对方撤回了一条消息", 3000)
+        assertFalse(ui.hasTag("image-thumb"))
+        val cache = File(testContext.cacheDir, com.tianting.app.core.FILE_CACHE_DIR)
+        until("缓存的图片被丢掉", 5000) { cache.walkTopDown().none { it.isFile && m.body.fileId!! in it.name } }
+    }
+
+    @Test fun tc_rcl_03_12_download_aborted_when_recalled_no_partial_file() { // TC-RCL-03-12、AC-RCL-03-12（真实服务端 + 假 S3 限速）
+        val (_, bob, conv) = c2c()
+        rule.waitUntil(15_000) { model.im?.msgActions == true }
+        val body = ByteArray(20 * 1024 * 1024) { (it % 253).toByte() }
+        val m = peerFile(bob, conv, "大文件ZXQ-RCL-3.bin", body, "application/octet-stream")
+        ui.waitTag("file-download", 15_000)
+        val cache = File(testContext.cacheDir, com.tianting.app.core.FILE_CACHE_DIR)
+        s3.reset()
+        s3.ctl("get_chunk_ms" to 100)
+        ui.tap("file-download")
+        if (ui.hasTag("source-dialog")) ui.tap("source-dialog-ok")
+        ui.waitTag("file-downloading", 15_000)
+        until("下了一部分", 15_000) { cache.walkTopDown().any { it.isFile && it.length() > 0 } }
+        offThread { bob.recall(conv, m.msgId!!) }
+        ui.waitText("该消息已被撤回", 5000)
+        ui.waitText("对方撤回了一条消息", 5000)
+        s3.ctl("get_chunk_ms" to 0)
+        until("缓存目录里没有部分文件", 10_000) { cache.walkTopDown().none { it.isFile } }
+        assertFalse(ui.hasTag("file-download-failed"))
+    }
+
+    @Test fun tc_quo_01_05_quote_image_and_file_summaries() { // TC-QUO-01-05 第 3 步、AC-QUO-01-5、AC-QUO-01-7 的客户端部分（真实服务端）
+        val (_, bob, conv) = c2c()
+        rule.waitUntil(15_000) { model.im?.msgActions == true }
+        peerImage(bob, conv, TestMedia.jpeg(800, 600), TestMedia.jpeg(400, 300), 800, 600)
+        peerFile(bob, conv, "报告.pdf", TestMedia.pdf(2048), "application/pdf")
+        ui.waitTag("image-loaded", 15_000)
+        ui.waitTag("file-bubble", 15_000)
+        fun quoteAndSend(bubbleTag: String, reply: String) {
+            rule.onNode(hasTestTag("bubble") and hasAnyDescendant(hasTestTag(bubbleTag)), useUnmergedTree = true).performTouchInput { longClick() }
+            ui.waitTag("menu-quote", 5000)
+            ui.tap("menu-quote")
+            ui.waitTag("quote-bar")
+            ui.type("composer-input", reply)
+            ui.tap("send-button")
+            until("对方收到 $reply") {
+                offThread { runCatching { bob.loadHistory(conv) } }
+                bob.messages(conv).any { it.body.text == reply }
+            }
+        }
+        quoteAndSend("image-thumb", "回图片")
+        assertTrue(ui.textOf("composer-input").isEmpty())
+        assertEquals("[图片]", bob.messages(conv).first { it.body.text == "回图片" }.body.quote!!.text)
+        quoteAndSend("file-bubble", "回文件")
+        assertEquals("[文件] 报告.pdf", bob.messages(conv).first { it.body.text == "回文件" }.body.quote!!.text)
+        rule.waitUntil(10_000) { rule.onAllNodesWithTag("msg-quote", useUnmergedTree = true).fetchSemanticsNodes().map { allText(it) }.let { l -> l.any { it.endsWith(": [图片]") } && l.any { it.endsWith(": [文件] 报告.pdf") } } }
+    }
+
     @Test fun tc_file_07_04_text_overtakes_and_images_keep_pick_order() { // TC-FILE-07-04、AC-FILE-07-4
         val (_, bob, conv) = c2c()
         s3.ctl("put_delay_ms" to 1500)

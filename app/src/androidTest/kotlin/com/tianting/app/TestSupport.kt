@@ -92,6 +92,9 @@ fun convJson(
     myRole: String? = null,
     updatedAt: Long = T0,
     allMuted: Boolean = false,
+    modVer: Long? = null,
+    mentionUnread: Long? = null,
+    firstMentionSeq: Long? = null,
 ): JsonObject {
     val m = linkedMapOf<String, Any?>(
         "convId" to convId, "type" to if (convId.startsWith("group:")) "group" else "c2c", "name" to name, "maxSeq" to maxSeq,
@@ -100,6 +103,9 @@ fun convJson(
     memberCount?.let { m["memberCount"] = it }
     if (allMuted) m["allMuted"] = true
     myRole?.let { m["myRole"] = it }
+    modVer?.let { m["modVer"] = it }
+    mentionUnread?.let { m["mentionUnread"] = it }
+    firstMentionSeq?.let { m["firstMentionSeq"] = it }
     return js(m).jsonObject
 }
 
@@ -355,6 +361,8 @@ class FakeAccountHttp(var user: String = "alice") : HttpTransport {
     var demoLogin = true
     /** GET /v1/config 的 features.files（C2 图片和文件）。 */
     var files = false
+    /** features.msgActions（C4 撤回、引用、@）；null 时不带这个字段（老服务端，问题 36）。 */
+    var msgActions: Boolean? = null
     var privacy: JsonObject? = null
     var eventsBody: JsonObject = obj("events" to emptyList<JsonObject>(), "otherSessions" to obj("count" to 0))
     private var nextGen = 2L
@@ -390,7 +398,7 @@ class FakeAccountHttp(var user: String = "alice") : HttpTransport {
 
     private fun configBody(): JsonObject {
         val m = linkedMapOf<String, Any?>(
-            "registerMode" to registerMode, "demoLogin" to demoLogin, "features" to obj("files" to files),
+            "registerMode" to registerMode, "demoLogin" to demoLogin, "features" to (if (msgActions == null) obj("files" to files) else obj("files" to files, "msgActions" to msgActions)),
             "limits" to obj("usernameMinLen" to 4, "usernameMaxLen" to 32, "passwordMinLen" to 8, "passwordMaxLen" to 128, "nicknameMaxLen" to 32, "deviceNameMaxLen" to 64),
         )
         privacy?.let { m["privacyNotice"] = it }

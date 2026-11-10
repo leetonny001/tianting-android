@@ -102,6 +102,10 @@ var SemanticsPropertyReceiver.dataKind by DataKind
 var SemanticsPropertyReceiver.dataError by DataError
 var SemanticsPropertyReceiver.dataEditable by DataEditable
 
+/** 消息行的标记（C4）：highlight（引用、"有人@我"跳转后高亮）、mention（被 @ 的是我，整体样式提示），多个用空格分开。 */
+val DataMark = SemanticsPropertyKey<String>("data-mark")
+var SemanticsPropertyReceiver.dataMark by DataMark
+
 fun Modifier.tag(tag: String): Modifier = testTag(tag)
 
 // ---- 文字 ----

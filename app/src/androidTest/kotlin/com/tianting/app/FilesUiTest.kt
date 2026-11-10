@@ -266,6 +266,47 @@ class FilesUiTest : UiTest() {
         assertTrue(rule.hasTag("image-thumb") && !rule.hasText("[暂不支持的消息]"))
     }
 
+    // ---- C4（FE-667）：撤回时正在全屏看、正在下载 ----
+
+    private fun recallEvent(seq: Long) = server.pushEvent(
+        "msgDeleted", "convId" to BOB_CONV, "msgIds" to listOf("$BOB_CONV#$seq"), "seqs" to listOf(seq), "recalled" to obj("by" to "bob", "at" to System.currentTimeMillis()),
+    )
+
+    @Test fun tc_rcl_03_08_viewer_closes_when_the_image_is_recalled() { // TC-RCL-03-08（页面部分）、AC-RCL-03-8
+        http.msgActions = true
+        objs.bodies["F9/thumb"] = TestMedia.jpeg(400, 300)
+        objs.bodies["F9/original"] = TestMedia.jpeg(400, 300)
+        withBob(imageMsg(1, "F9"))
+        openChat()
+        rule.waitTag("image-loaded", 10_000)
+        click("image-loaded")
+        rule.waitTag("viewer-image", 10_000)
+        recallEvent(1)
+        rule.waitGoneTag("image-viewer")
+        rule.waitText("该消息已被撤回")
+        rule.waitText("对方撤回了一条消息")
+        assertFalse(rule.hasTag("image-thumb"))
+    }
+
+    @Test fun tc_rcl_03_12_download_aborted_by_recall_no_partial_file() { // TC-RCL-03-12（页面部分，假对象存储；真实服务端见 FilesE2eTest）、AC-RCL-03-12
+        http.msgActions = true
+        objs.bodies["F10/original"] = ByteArray(64 * 1024) { 7 }
+        objs.holdGets = true
+        withBob(fileMsg(1, "F10", "大文件.bin", mime = "application/octet-stream"))
+        val cache = java.io.File(testContext.cacheDir, com.tianting.app.core.FILE_CACHE_DIR)
+        cache.deleteRecursively()
+        openChat()
+        click("file-download")
+        if (rule.hasTag("source-dialog")) click("source-dialog-ok")
+        rule.waitTag("file-downloading", 10_000)
+        waitFor("写了一半") { cache.walkTopDown().any { it.isFile && it.length() > 0 } }
+        recallEvent(1)
+        rule.waitText("该消息已被撤回")
+        rule.waitText("对方撤回了一条消息")
+        waitFor("没有部分文件") { cache.walkTopDown().none { it.isFile } }
+        assertFalse(rule.hasTag("file-download-failed"), "不是\"下载失败\"")
+    }
+
     // ---- AC-CHAT-90-8、90-9（FE-640）：文件页面的可读名称、浅色和深色 ----
 
     /** button-name 的等价检查（同 AccountUiTest，问题 A10：没有 espresso-accessibility，不新增依赖）：能点的节点都要有名字。 */

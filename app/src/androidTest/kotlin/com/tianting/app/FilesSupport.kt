@@ -132,6 +132,8 @@ class AutoObjects : ObjectTransport {
     val gets = CopyOnWriteArrayList<String>()
     val bodies = ConcurrentHashMap<String, ByteArray>() // "fileId/variant" → 内容
     @Volatile var holdPuts = false
+    /** GET 写一半就停住（测"下载中"被撤回）：取消时回失败。 */
+    @Volatile var holdGets = false
     private val net = Executors.newSingleThreadExecutor()
 
     override fun put(url: String, headers: Map<String, String>, file: File, onProgress: (Long) -> Unit, callback: ObjectCallback): HttpCall {
@@ -149,6 +151,15 @@ class AutoObjects : ObjectTransport {
 
     override fun get(url: String, dest: File, onProgress: (Long) -> Unit, callback: ObjectCallback): HttpCall {
         gets.add(url)
+        if (holdGets) {
+            net.execute {
+                val key = Uri.parse(url).path.orEmpty().removePrefix("/chat/")
+                val body = bodies[key] ?: ByteArray(4096)
+                dest.writeBytes(body.copyOf(body.size / 2))
+                onProgress((body.size / 2).toLong())
+            }
+            return HttpCall { net.execute { callback.onFailure() } }
+        }
         net.execute {
             val key = Uri.parse(url).path.orEmpty().removePrefix("/chat/")
             val body = bodies[key]

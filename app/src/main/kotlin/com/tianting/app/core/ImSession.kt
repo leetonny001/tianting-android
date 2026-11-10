@@ -94,8 +94,8 @@ class ImSession(
     var removedTick by mutableIntStateOf(0)
         private set
 
-    /** 草稿（F-UI-24）：只在内存，按 convId。输入区离开时存进来、回来时取走。 */
-    val drafts = mutableStateMapOf<String, String>()
+    /** 草稿（F-UI-24；C4 起结构化：文字、@ 区间、引用，F-MEN-01 规则 5）：只在内存，按 convId。输入区离开时存进来、回来时取走。 */
+    val drafts = mutableStateMapOf<String, Draft>()
 
     /** 资料缓存的界面副本（F-SOC-10）：getUsers 拿到的都放这里。不可见、不存在都没有这一项。 */
     val profiles = mutableStateMapOf<String, UserProfile>()
@@ -110,6 +110,11 @@ class ImSession(
     var filesFeature: () -> Boolean = { false }
 
     val filesEnabled: Boolean get() = media != null && filesFeature()
+
+    /** 服务端配置的 features.msgActions（C4，IM_MSG_ACTIONS_ENABLED）：关闭时消息菜单只有"复制"，没有引用、撤回、@（PRD-ui F-UI-09 规则 4）。 */
+    var msgActionsFeature: () -> Boolean = { false }
+
+    val msgActions: Boolean get() = msgActionsFeature()
 
     /** 私聊权限提示条的来源（F-UI-31）：clientMsgId → 错误码。只在内存。 */
     val sendTips = mutableStateMapOf<String, Int>()

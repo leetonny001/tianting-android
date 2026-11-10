@@ -38,10 +38,12 @@ private val BY_CODE: Map<Int, String> = mapOf(
     4041 to "请求出错",
     4042 to "用户不存在",
     4043 to "群聊不存在或已解散",
+    4044 to "消息不存在或已过期",
     4045 to "该申请已过期",
     4046 to "对方已不在群里",
     4090 to "请求出错",
     4091 to "你们已经是朋友了",
+    4097 to "发送时间超过 2 分钟，无法撤回", // 没有时限信息时的兜底；recall 按 details.windowSeconds 选（recallErrorText）
     4130 to "请求出错",
     4131 to "请求出错",
     4132 to "你的好友数量已达上限",
@@ -52,6 +54,7 @@ private val BY_CODE: Map<Int, String> = mapOf(
     4137 to "对方回复之前，发送的消息数量已达上限",
     4290 to "发送太频繁，请稍后再试",
     4292 to "今天的次数已用完，明天再试",
+    4293 to "@所有人次数已用完",
     5000 to "服务异常，请稍后重试",
     5030 to "服务异常，请稍后重试",
 )
@@ -79,7 +82,21 @@ fun messageFor(code: Int, cmd: String? = null, strangerMsgLimit: Int = 0, name: 
 /** 失败的命令的错误码；超时、断线按服务异常提示。 */
 fun errCode(e: Throwable): Int = (e as? IMError)?.code ?: 5000
 
+/** 后台删除（PRD-admin F-ADM-31）。撤回按 PRD-chat F-RCL-02 规则 1a 的表（SDK recallText），不用这句。 */
 const val MESSAGE_DELETED = "该消息已被删除"
+
+/** 正在全屏看、正在下载的那条被撤回了（AC-RCL-03-8、AC-RCL-03-12）。 */
+const val MESSAGE_RECALLED = "该消息已被撤回"
+
+/**
+ * 撤回失败的提示（AC-RCL-01-8、AC-RCL-02-5，问题 26、37）：4097 按 details.windowSeconds 选"2 分钟""7 天"；4030"你没有权限撤回这条消息"；
+ * 超时、断线（不是 IMError）按服务异常。不自动重试。
+ */
+fun recallErrorText(e: Throwable): String {
+    val code = errCode(e)
+    val window = ((e as? IMError)?.details?.get("windowSeconds") as? JsonPrimitive)?.longOrNull
+    return com.tianting.sdk.messageFor("recall", code, windowSeconds = window) ?: defaultMessage(code)
+}
 
 /** 封禁（4034、kicked.reason = suspended）：永久（null）或缺字段时没有解封时间。 */
 fun bannedText(until: Long?): String = if (until != null) "账号已被封禁，解封时间：${formatDateTime(until)}" else "账号已被封禁"

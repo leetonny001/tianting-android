@@ -73,8 +73,31 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import com.tianting.app.core.Draft
 import com.tianting.app.core.EMOJI
+import com.tianting.app.core.EditState
 import com.tianting.app.core.MESSAGE_DELETED
+import com.tianting.app.core.MESSAGE_RECALLED
+import com.tianting.app.core.applyEdit
+import com.tianting.app.core.insertMention
+import com.tianting.app.core.recallErrorText
+import com.tianting.app.core.toMentions
+import com.tianting.app.ui.DataMark
+import com.tianting.app.ui.dataMark
+import com.tianting.app.ui.dataUser
+import com.tianting.sdk.GroupMemberInfo
+import com.tianting.sdk.GroupRole
+import com.tianting.sdk.MessageAction
+import com.tianting.sdk.QuoteRef
+import com.tianting.sdk.QuoteState
+import com.tianting.sdk.QuoteView
+import com.tianting.sdk.quoteLabel
+import com.tianting.sdk.quoteSummary
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.semantics.onLongClick
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import com.tianting.app.core.RouteState
 import com.tianting.app.core.applyPath
 import com.tianting.app.core.defaultMessage
@@ -192,6 +215,68 @@ internal fun permissionTips(ms: List<Message>, tips: Map<String, Int>): Map<Stri
     return out
 }
 
+/** 消息菜单项（PRD-ui F-UI-09 规则 3，PRD-chat 第 13.3 节）。"举报"随 C6。 */
+internal enum class MenuAction(val text: String, val tag: String) {
+    COPY("复制", "menu-copy"), QUOTE("引用", "menu-quote"), RECALL("撤回", "menu-recall"), RETRY("重发", "menu-retry"), DELETE("删除", "menu-delete"),
+}
+
+/**
+ * 菜单项（F-UI-09 规则 3～5）：features.msgActions 关闭时只有"复制"（文本）和失败消息的"重发""删除"；打开时按 SDK 的 messageActions
+ * （复制、引用、撤回：撤回按 ts 和校正后的服务端时间，撤回、删除的消息和提示行为空）。为空时长按没有反应。
+ */
+internal fun menuItemsFor(m: Message, actionsOn: Boolean, sdkActions: () -> List<MessageAction>): List<MenuAction> {
+    if (m.deleted || m.type == MsgType.TIP) return emptyList()
+    val out = ArrayList<MenuAction>()
+    if (actionsOn) {
+        for (a in sdkActions()) {
+            out.add(
+                when (a) {
+                    MessageAction.COPY -> MenuAction.COPY
+                    MessageAction.QUOTE -> MenuAction.QUOTE
+                    MessageAction.RECALL -> MenuAction.RECALL
+                },
+            )
+        }
+    } else if (m.type == MsgType.TEXT) {
+        out.add(MenuAction.COPY)
+    }
+    if (m.status == MessageStatus.FAILED) {
+        out.add(MenuAction.RETRY)
+        out.add(MenuAction.DELETE)
+    }
+    return out
+}
+
+/** 被 @ 的是我（含 @ 所有人，自己发的不算，F-MEN-03 规则 6）：气泡整体用样式提示（F-MEN-01 规则 4）。 */
+internal fun mentionsMe(m: Message, self: String): Boolean {
+    val x = m.body.mentions ?: return false
+    return m.from != self && (x.all || self in x.userIds)
+}
+
+/** 引用跳转的范围（F-QUO-02 规则 5）：距已加载范围 200 条以内才翻页；一次最多 200 条（sync 的 limit 上限）。 */
+internal const val QUOTE_JUMP_MAX = 200L
+
+/**
+ * 跳到 seq 之前要做什么（F-QUO-02 规则 5，问题 40）：已加载的直接跳；更早的，差距在 limit 以内往上翻页（已加载范围保持连续）；
+ * 更远的提示"消息太早，请翻页查看"；没有 seq，或在已加载范围里却没有，提示"消息不存在"。
+ */
+internal sealed interface JumpPlan {
+    data object Here : JumpPlan
+    data object TooEarly : JumpPlan
+    data object Missing : JumpPlan
+    data class Load(val count: Int) : JumpPlan
+}
+
+internal fun jumpPlan(seq: Long?, loaded: List<Long>, limit: Long): JumpPlan {
+    if (seq == null) return JumpPlan.Missing
+    if (seq in loaded) return JumpPlan.Here
+    val oldest = loaded.minOrNull() ?: return JumpPlan.Missing
+    if (seq > oldest) return JumpPlan.Missing
+    val gap = oldest - seq
+    if (gap > limit) return JumpPlan.TooEarly
+    return JumpPlan.Load(minOf(QUOTE_JUMP_MAX, gap).toInt())
+}
+
 private data class Blocked(val tip: String, val bar: String)
 
 /** 不能发送的原因（F-UI-33 规则 2～4）：快照按 reason 映射（不认识的值按"被移出"）。 */
@@ -234,9 +319,23 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
     var history by remember { mutableStateOf(HistoryState.IDLE) }
     var newCount by remember { mutableIntStateOf(0) }
     var retryId by remember { mutableStateOf<String?>(null) }
-    var menuId by remember { mutableStateOf<String?>(null) }
+    // 菜单项在打开时算好：菜单开着的时候过了撤回时限，"撤回"还在，点了按服务端 4097 提示（AC-RCL-01-8，问题 37）。
+    var menu by remember { mutableStateOf<Pair<String, List<MenuAction>>?>(null) }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    // 撤回、引用、@（C4）：GET /v1/config 的 features.msgActions 打开才有（PRD-ui F-UI-09 规则 4）。
+    val actionsOn = im.msgActions
+    // 引用条（F-QUO-01，AC-QUO-01-5）：只记 msgId；草稿里也只有 msgId（问题 41）。
+    var quoteId by remember { mutableStateOf(im.drafts[convId]?.quote) }
+    var quoteFocus by remember { mutableIntStateOf(0) }
+    // 全屏看的图片（按 clientMsgId）：被撤回、删除时退出全屏并提示（AC-RCL-03-8）。
+    var viewer by remember { mutableStateOf<String?>(null) }
+    // 跳转（引用、"有人@我"）后高亮的 seq，2 秒后消失。
+    var highlight by remember { mutableStateOf<Long?>(null) }
+    var jumpSeq by remember { mutableStateOf<Long?>(null) }
+    // "有人@我"（F-MEN-03 规则 3）：打开会话时只取一次 firstMentionSeq（读到最新后服务端就清零了，问题 40）。
+    var mentionAt by remember { mutableStateOf<Long?>(null) }
+    var mentionTaken by remember { mutableStateOf(false) }
 
     // 只有聊天页实际可见时才是当前会话（F-UI-06 规则 8）；这个页面被盖住时已经离开组合。
     DisposableEffect(convId) {
@@ -272,7 +371,12 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
 
     val blocked = blockedBy(snapshot, probe)
     // 不能发送时输入内容不保留（F-UI-33 规则 5）。Composer 离开组合时存的草稿先于这里运行；禁言不走这条，内容保留。
-    LaunchedEffect(blocked != null, convId) { if (blocked != null) im.drafts.remove(convId) }
+    LaunchedEffect(blocked != null, convId) {
+        if (blocked != null) {
+            im.drafts.remove(convId)
+            quoteId = null
+        }
+    }
     val probing = isGroup && (loadedSnapshot == null || (unknown && !probeDone)) && blocked == null
 
     suspend fun loadMore() {
@@ -340,6 +444,110 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
         }
     }
 
+    // 列表里消息行前面的固定项（"不能发送"提示、加载中）：跳转时按下标滚动要加上。
+    val leading = (if (blocked != null) 1 else 0) + (if (probing) 1 else 0)
+    // 跳到 jumpSeq：等列表用新数据重组后再按下标滚动，滚到后高亮（AC-QUO-02-3、AC-MEN-03-6）。
+    LaunchedEffect(jumpSeq, reversed) {
+        val seq = jumpSeq ?: return@LaunchedEffect
+        val i = reversed.indexOfFirst { it is ChatRow.Msg && it.m.seq == seq }
+        if (i < 0) return@LaunchedEffect
+        jumpSeq = null
+        list.scrollToItem(leading + i)
+        highlight = seq
+    }
+    LaunchedEffect(highlight) {
+        if (highlight == null) return@LaunchedEffect
+        delay(2000)
+        highlight = null
+    }
+
+    /** 跳到 seq（F-QUO-02 规则 5）：limit 为 Long.MAX_VALUE 时一页页翻到为止（"有人@我"，问题 40）。 */
+    fun jumpTo(seq: Long?, limit: Long) {
+        scope.launch {
+            while (true) {
+                val loaded = im.client.messages(convId).mapNotNull { it.seq }
+                when (val p = jumpPlan(seq, loaded, limit)) {
+                    JumpPlan.Here -> {
+                        jumpSeq = seq
+                        return@launch
+                    }
+                    JumpPlan.TooEarly -> {
+                        app.toast.show("消息太早，请翻页查看")
+                        return@launch
+                    }
+                    JumpPlan.Missing -> {
+                        app.toast.show("消息不存在")
+                        return@launch
+                    }
+                    is JumpPlan.Load -> {
+                        if (history == HistoryState.END) {
+                            app.toast.show("消息不存在")
+                            return@launch
+                        }
+                        if (history == HistoryState.LOADING) { // 翻页正在进行：等它结束再看
+                            delay(100)
+                            continue
+                        }
+                        history = HistoryState.LOADING
+                        val more = try {
+                            onMain { im.client.loadHistory(convId, p.count) }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            history = HistoryState.ERROR
+                            return@launch
+                        }
+                        history = if (more) HistoryState.IDLE else HistoryState.END
+                        if (!more && im.client.messages(convId).none { it.seq == seq }) {
+                            app.toast.show("消息不存在")
+                            return@launch
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 记下第一条提及（会话列表到了以后只取一次）。
+    LaunchedEffect(conv != null) {
+        if (mentionTaken || conv == null) return@LaunchedEffect
+        mentionTaken = true
+        if (actionsOn && (conv.mentionUnread ?: 0) > 0) mentionAt = conv.firstMentionSeq
+    }
+    // 那条进了视口就不再显示按钮（问题 40）。
+    LaunchedEffect(mentionAt, messages) {
+        val seq = mentionAt ?: return@LaunchedEffect
+        val key = messages.firstOrNull { it.seq == seq }?.clientMsgId ?: return@LaunchedEffect
+        snapshotFlow { list.layoutInfo.visibleItemsInfo.any { it.key == key } }.first { it }
+        mentionAt = null
+    }
+
+    // 正在全屏看的图片被撤回、删除：退出全屏并提示（AC-RCL-03-8）。
+    val viewing = viewer?.let { id -> messages.firstOrNull { it.clientMsgId == id } }
+    LaunchedEffect(viewer, viewing?.deleted) {
+        if (viewer == null || viewing?.deleted != true) return@LaunchedEffect
+        viewer = null
+        app.toast.show(if (viewing.recalled) MESSAGE_RECALLED else MESSAGE_DELETED)
+    }
+
+    fun act(item: MenuAction, m: Message) {
+        menu = null
+        when (item) {
+            MenuAction.COPY -> app.copy(m.body.text.orEmpty())
+            MenuAction.RETRY -> im.launchCmd { im.client.retry(convId, m.clientMsgId) } // 菜单里的"重发"不再二次确认（规则 3）
+            MenuAction.DELETE -> im.launchCmd { im.client.removeFailed(convId, m.clientMsgId) } // 只从本地移除（规则 3）
+            MenuAction.QUOTE -> {
+                quoteId = m.msgId
+                quoteFocus++
+            }
+            // 4097 按 windowSeconds；4030"你没有权限撤回这条消息"（AC-RCL-02-5）；不自动重试（问题 26）。成功后 SDK 本地立即按撤回显示。
+            MenuAction.RECALL -> {
+                val id = m.msgId ?: return
+                im.launchCmd({ e -> app.toast.show(recallErrorText(e)) }) { im.client.recall(convId, id) }
+            }
+        }
+    }
+
     val liveMessage = { id: String? -> id?.let { i -> messages.firstOrNull { it.clientMsgId == i && !it.deleted } } }
     val retry = liveMessage(retryId)
     val userState = if (isGroup) RouteState(source = ApplySource.GROUP, sourceRef = to) else RouteState(source = ApplySource.CONV)
@@ -381,22 +589,38 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
                     when (r) {
                         is ChatRow.Divider -> T(formatTime(r.ts), Modifier.fillMaxWidth(), style = Tt.type.caption, color = Tt.colors.textTertiary, align = TextAlign.Center)
                         is ChatRow.Permission -> PermissionTip(r.code, to)
-                        is ChatRow.Msg -> when {
-                            r.m.deleted -> CenterTip(MESSAGE_DELETED, "msg-deleted")
-                            r.m.type == MsgType.TIP -> TipRow(r.m, convId)
-                            else -> Bubble(
-                                m = r.m,
-                                mine = r.m.from == im.self,
-                                showName = isGroup && r.m.from != im.self,
-                                maxWidth = bubbleMax,
-                                listTop = listTop,
-                                userState = userState,
-                                menuOpen = menuId == r.m.clientMsgId,
-                                onRetry = { retryId = r.m.clientMsgId },
-                                onMenu = { menuId = r.m.clientMsgId },
-                                onMenuClose = { menuId = null },
-                                convId = convId,
-                            )
+                        is ChatRow.Msg -> HighlightBox(r.m.seq != null && r.m.seq == highlight) {
+                            val recall = if (r.m.recalled) im.client.recallNotice(r.m) else null
+                            when {
+                                // 撤回按 F-RCL-02 规则 1a 的表（F-UI-42 规则 4）；撤回、删除的提示行没有菜单（F-RCL-03 规则 6）
+                                r.m.deleted && recall != null -> CenterTip(rememberRecallText(recall), "msg-recalled")
+                                r.m.deleted -> CenterTip(MESSAGE_DELETED, "msg-deleted")
+                                r.m.type == MsgType.TIP -> TipRow(r.m, convId)
+                                else -> {
+                                    // 长按时重新算（撤回按当时的服务端时间，AC-RCL-01-8）；组合时算的只决定长按有没有反应。
+                                    val itemsNow = { menuItemsFor(r.m, actionsOn) { im.client.messageActions(r.m, conv?.myRole) } }
+                                    val items = itemsNow()
+                                    val open = menu?.takeIf { it.first == r.m.clientMsgId }
+                                    Bubble(
+                                        m = r.m,
+                                        mine = r.m.from == im.self,
+                                        showName = isGroup && r.m.from != im.self,
+                                        maxWidth = bubbleMax,
+                                        listTop = listTop,
+                                        userState = userState,
+                                        hasMenu = items.isNotEmpty(),
+                                        mentioned = actionsOn && mentionsMe(r.m, im.self),
+                                        menuItems = open?.second,
+                                        onRetry = { retryId = r.m.clientMsgId },
+                                        onMenu = { itemsNow().takeIf { it.isNotEmpty() }?.let { menu = r.m.clientMsgId to it } },
+                                        onMenuClose = { menu = null },
+                                        onPick = { act(it, r.m) },
+                                        onQuote = { q -> jumpTo(q.seq, QUOTE_JUMP_MAX) },
+                                        onOpenImage = { viewer = r.m.clientMsgId },
+                                        convId = convId,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -435,14 +659,43 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
                     T("↓ $newCount 条新消息", Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = Tt.type.caption, color = Tt.colors.onBrand)
                 }
             }
+            if (mentionAt != null) {
+                // "有人@我"（F-MEN-03 规则 3，AC-MEN-03-6）：点了滚动到那条并高亮，按钮消失。
+                Surface(
+                    onClick = {
+                        val seq = mentionAt
+                        mentionAt = null
+                        jumpTo(seq, Long.MAX_VALUE)
+                    },
+                    modifier = Modifier.align(Alignment.TopEnd).padding(end = 12.dp, top = 12.dp).tag("mention-jump").heightIn(min = TtDimen.sizeTouchMin.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Tt.colors.brandFill,
+                    contentColor = Tt.colors.onBrand,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        T("有人@我", Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = Tt.type.caption, color = Tt.colors.onBrand)
+                    }
+                }
+            }
         }
         val mute by produceState<com.tianting.sdk.MuteInfo?>(null, convId, im.muteTick) { value = onMain { im.client.muteState(convId) } }
         when {
             probing -> Unit
             blocked != null -> DisabledBar(blocked.bar)
             mute != null -> DisabledBar(mutedText(mute!!))
-            else -> Composer(convId) { newCount = 0 }
+            else -> Composer(
+                convId = convId,
+                messages = messages,
+                actionsOn = actionsOn,
+                mentionGroup = if (isGroup && actionsOn) MentionGroup(to, conv?.myRole) else null,
+                quoteId = quoteId,
+                quoteFocus = quoteFocus,
+                onQuoteCancel = { quoteId = null },
+            ) { newCount = 0 }
         }
+    }
+    viewing?.body?.image?.fileId?.takeIf { it.isNotEmpty() && !viewing.deleted }?.let { fileId ->
+        ImageViewer(fileId, viewing.body.image?.mime) { viewer = null }
     }
     if (retry != null) {
         Confirm(
@@ -524,6 +777,19 @@ private fun PermissionTip(code: Int, to: String) {
     }
 }
 
+/** 跳转后的高亮（AC-QUO-02-3、AC-MEN-03-6）：整行用 surfaceSelected 底色，2 秒后消失。 */
+@Composable
+private fun HighlightBox(on: Boolean, content: @Composable () -> Unit) {
+    if (!on) {
+        content()
+        return
+    }
+    Box(
+        Modifier.fillMaxWidth().tag("msg-highlight").semantics { dataMark = "highlight" }
+            .clip(RoundedCornerShape(TtDimen.radiusMd.dp)).background(Tt.colors.surfaceSelected),
+    ) { content() }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Bubble(
@@ -533,10 +799,15 @@ private fun Bubble(
     maxWidth: Dp,
     listTop: Float,
     userState: RouteState,
-    menuOpen: Boolean,
+    hasMenu: Boolean,
+    mentioned: Boolean,
+    menuItems: List<MenuAction>?,
     onRetry: () -> Unit,
     onMenu: () -> Unit,
     onMenuClose: () -> Unit,
+    onPick: (MenuAction) -> Unit,
+    onQuote: (QuoteView) -> Unit,
+    onOpenImage: () -> Unit,
     convId: String,
 ) {
     val nav = LocalNav.current
@@ -546,8 +817,8 @@ private fun Bubble(
     val attachment = m.isAttachment()
     val supported = m.type == MsgType.TEXT || attachment
     val failed = m.status == MessageStatus.FAILED
-    var viewing by remember { mutableStateOf(false) }
-    val hasMenu = supported || failed
+    // 长按（F-UI-09）：有菜单项才响应；图片、文件里能点的地方也接长按（C4：已发送的图片、文件可以引用、撤回）。
+    val longPress: (() -> Unit)? = if (hasMenu) onMenu else null
     val avatar: @Composable () -> Unit = {
         Box(
             Modifier.tag("msg-avatar").size(40.dp).clickable { nav.go(userPath(m.from), userState) }.semantics { contentDescription = "查看 $senderName 的资料" },
@@ -558,6 +829,7 @@ private fun Bubble(
         Modifier.fillMaxWidth().tag("message").semantics {
             dataStatus = m.status.name.lowercase()
             dataClientMsgId = m.clientMsgId
+            if (mentioned) dataMark = "mention"
         },
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Top,
@@ -576,7 +848,12 @@ private fun Bubble(
                     }
                 }
                 Box {
-                    val border = if (!mine && !Tt.colors.isDark()) Modifier.border(BorderStroke(1.dp, Tt.colors.divider), bubbleShape) else Modifier
+                    // 被 @ 的是我：气泡整体加品牌色描边（F-MEN-01 规则 4，颜色来自 token，深色跟着变）
+                    val border = when {
+                        mentioned -> Modifier.border(BorderStroke(2.dp, Tt.colors.brand), bubbleShape)
+                        !mine && !Tt.colors.isDark() -> Modifier.border(BorderStroke(1.dp, Tt.colors.divider), bubbleShape)
+                        else -> Modifier
+                    }
                     val bg = if (mine) Tt.colors.bubbleSelfBg else Tt.colors.bubbleOtherBg
                     val fg = when {
                         !supported -> if (mine) Tt.colors.bubbleSelfText else Tt.colors.textSecondary
@@ -589,63 +866,70 @@ private fun Bubble(
                             .combinedClickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
-                                enabled = hasMenu && (!attachment || failed),
+                                enabled = hasMenu,
                                 onClick = {},
+                                onLongClickLabel = "消息操作",
                                 onLongClick = onMenu,
                             ).padding(horizontal = if (image) 4.dp else 12.dp, vertical = if (image) 4.dp else 8.dp),
                     ) {
-                        when (m.type) {
-                            MsgType.IMAGE -> ImageContent(m) { viewing = true }
-                            MsgType.FILE -> FileContent(m, mine, convId)
-                            MsgType.TEXT -> T(m.body.text.orEmpty(), color = fg)
-                            else -> T("[暂不支持的消息]", color = fg)
+                        Column {
+                            m.body.quote?.let { q -> QuoteBlock(q, fg, longPress) { onQuote(q) } }
+                            when (m.type) {
+                                MsgType.IMAGE -> ImageContent(m, onLongClick = longPress, onOpen = onOpenImage)
+                                MsgType.FILE -> FileContent(m, mine, convId, onLongClick = longPress)
+                                MsgType.TEXT -> T(m.body.text.orEmpty(), color = fg)
+                                else -> T("[暂不支持的消息]", color = fg)
+                            }
                         }
                     }
-                    if (menuOpen) BubbleMenu(m, convId, listTop, onMenuClose)
+                    if (menuItems != null) BubbleMenu(menuItems, listTop, onPick, onMenuClose)
                 }
             }
             if (mine && attachment) AttachmentStatus(m, convId)
         }
         if (mine) avatar()
     }
-    val fileId = m.body.image?.fileId
-    if (viewing && !fileId.isNullOrEmpty()) ImageViewer(fileId, m.body.image?.mime) { viewing = false }
+}
+
+/**
+ * 气泡顶部的引用（F-QUO-02 规则 3）：四种状态的文字来自 SDK 的 quoteLabel，正常时前面加原发送者的显示名；
+ * Compose 的 Text 按纯文本显示，不解析 HTML（AC-QUO-02-5）。点击跳到原消息（规则 5）。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun QuoteBlock(q: QuoteView, color: androidx.compose.ui.graphics.Color, onLongClick: (() -> Unit)?, onClick: () -> Unit) {
+    val from = q.from?.takeIf { it.isNotEmpty() }
+    val name = if (from != null) rememberDisplayName(from) else ""
+    val label = quoteLabel(q)
+    val text = if (q.state == QuoteState.NORMAL && from != null) "$name: $label" else label
+    Row(
+        Modifier.padding(bottom = 4.dp).tag("msg-quote").semantics { dataKind = q.state.wire }
+            .clip(RoundedCornerShape(TtDimen.radiusSm.dp))
+            .combinedClickable(onClickLabel = "查看引用的消息", onLongClick = onLongClick, onClick = onClick)
+            .heightIn(min = 24.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(width = 3.dp, height = 20.dp).background(color))
+        T(text, Modifier.padding(start = 6.dp, end = 4.dp), style = Tt.type.caption, color = color, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+    }
 }
 
 private val MENU_GAP = 4.dp
 
-/** 气泡菜单（F-UI-09 规则 2）：在气泡上方；到消息列表顶边的空间不够时在下方。点菜单外关闭。 */
+/** 气泡菜单（F-UI-09 规则 2）：在气泡上方；到消息列表顶边的空间不够时在下方。点菜单外关闭。项是打开时算好的（AC-RCL-01-8）。 */
 @Composable
-private fun BubbleMenu(m: Message, convId: String, listTop: Float, onClose: () -> Unit) {
-    val im = LocalIm.current
-    val app = LocalApp.current
+private fun BubbleMenu(items: List<MenuAction>, listTop: Float, onPick: (MenuAction) -> Unit, onClose: () -> Unit) {
     val gap = with(LocalDensity.current) { MENU_GAP.roundToPx() }
-    val failed = m.status == MessageStatus.FAILED
     Popup(popupPositionProvider = BubbleMenuPosition(listTop.toInt(), gap), onDismissRequest = onClose, properties = PopupProperties(focusable = true)) {
         Surface(
-            Modifier.tag("bubble-menu").widthIn(min = 120.dp),
+            Modifier.tag("bubble-menu").widthIn(min = 120.dp).semantics { contentDescription = "消息操作" },
             shape = RoundedCornerShape(TtDimen.radiusMd.dp),
             color = Tt.colors.surface,
             border = BorderStroke(1.dp, Tt.colors.divider),
             shadowElevation = 4.dp,
         ) {
             Column(Modifier.padding(vertical = 4.dp)) {
-                if (m.type == MsgType.TEXT) {
-                    MenuItem("复制", "menu-copy") {
-                        app.copy(m.body.text.orEmpty())
-                        onClose()
-                    }
-                }
-                if (failed) {
-                    MenuItem("重发", "menu-retry") {
-                        im.launchCmd { im.client.retry(convId, m.clientMsgId) } // 菜单里的"重发"不再二次确认（规则 3）
-                        onClose()
-                    }
-                    MenuItem("删除", "menu-delete") {
-                        im.launchCmd { im.client.removeFailed(convId, m.clientMsgId) } // 只从本地移除（规则 3）
-                        onClose()
-                    }
-                }
+                for (item in items) MenuItem(item.text, item.tag) { onPick(item) }
             }
         }
     }
@@ -670,15 +954,31 @@ internal class BubbleMenuPosition(private val listTop: Int, private val gap: Int
 /**
  * 输入区（F-UI-10）：自动增高到 5 行，超过 5000 码点显示"已超出 N 字"并禁用发送（C-28）；发送按钮 + IME 发送动作（3.4 节）。
  * 输入法组字期间的回车由输入法自己上屏，不到这里；万一到了也不发送（AC-UI-10-2）。
- * 进入时取走这个会话的草稿，离开时把没发出去的内容存回去（F-UI-24）。
+ * 进入时取走这个会话的草稿，离开时把没发出去的内容存回去（F-UI-24）：文字、@ 区间、引用条（结构化草稿，AC-MEN-01-10）。
+ *
+ * @（PRD-chat F-MEN-01 规则 5，core/Mentions.kt 的 applyEdit）：群聊里在行首或空白后敲 @ / ＠ 才打开成员选择；组字中不改模型、
+ * 不打开（上屏后再看）；光标不落进 @ 内部，退格一次删整段；粘贴的 @xxx 只是文字。单聊、features.msgActions 关闭时不打开。
  */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun Composer(convId: String, onSent: () -> Unit) {
+private fun Composer(
+    convId: String,
+    messages: List<Message>,
+    actionsOn: Boolean,
+    mentionGroup: MentionGroup?,
+    quoteId: String?,
+    quoteFocus: Int,
+    onQuoteCancel: () -> Unit,
+    onSent: () -> Unit,
+) {
     val im = LocalIm.current
     val app = LocalApp.current
     val keyboard = LocalSoftwareKeyboardController.current
-    var value by remember { mutableStateOf(TextFieldValue(im.drafts[convId].orEmpty()).let { it.copy(selection = TextRange(it.text.length)) }) }
+    val initial = remember { im.drafts[convId] }
+    var value by remember { mutableStateOf(TextFieldValue(initial?.text.orEmpty()).let { it.copy(selection = TextRange(it.text.length)) }) }
+    var edit by remember { mutableStateOf(EditState(value.text, value.text.length, ranges = if (mentionGroup != null) initial?.mentions.orEmpty() else emptyList())) }
+    var picker by remember { mutableStateOf<Int?>(null) } // 打开选择时 @ 的位置
+    val focus = remember { FocusRequester() }
     var emoji by remember { mutableStateOf(false) }
     var attach by remember { mutableStateOf(false) }
     var keepInfo by remember { mutableStateOf<List<android.net.Uri>?>(null) }
@@ -705,13 +1005,35 @@ private fun Composer(convId: String, onSent: () -> Unit) {
             pickFiles.launch(arrayOf("*/*"))
         }
     }
-    val latest = rememberUpdated(value.text)
+    val latest = rememberUpdated(Draft(value.text, edit.ranges, quoteId))
     DisposableEffect(convId) {
         im.drafts.remove(convId)
         onDispose {
-            val text = latest.value
-            if (text.isBlank()) im.drafts.remove(convId) else im.drafts[convId] = text
+            val d = latest.value
+            if (d.isEmpty) im.drafts.remove(convId) else im.drafts[convId] = d
         }
+    }
+    // 选了"引用"、选好了 @ 的人：焦点回到输入框（F-UI-10 规则 7）。
+    LaunchedEffect(quoteFocus) { if (quoteFocus > 0) runCatching { focus.requestFocus() } }
+
+    fun onChange(nv: TextFieldValue) {
+        val r = applyEdit(edit, nv.text, nv.selection.start, nv.selection.end, composing = nv.composition != null, canMention = mentionGroup != null)
+        edit = r.state
+        value = if (r.state.text == nv.text && r.state.selStart == nv.selection.start && r.state.selEnd == nv.selection.end) {
+            nv
+        } else {
+            TextFieldValue(r.state.text, TextRange(r.state.selStart, r.state.selEnd))
+        }
+        if (r.trigger != null) picker = r.trigger
+    }
+
+    fun pickMention(name: String, userId: String?) {
+        val at = picker ?: return
+        picker = null
+        val r = insertMention(value.text, edit.ranges, at, name, userId)
+        edit = EditState(r.text, r.caret, r.caret, r.ranges)
+        value = TextFieldValue(r.text, TextRange(r.caret))
+        runCatching { focus.requestFocus() }
     }
     val check = checkText(value.text)
     val over = (check as? TextCheck.Rejected)?.takeIf { it.reason == TextRejectReason.TOO_LONG }?.over ?: 0
@@ -721,14 +1043,19 @@ private fun Composer(convId: String, onSent: () -> Unit) {
         if (!canSend || value.composition != null) return
         sending = true
         val text = value.text
+        // C4：引用只带 msgId；@ 只在群聊，区间里还以 @ 开头的才算（AC-MEN-01-5）。开关关闭时都不带。
+        val quote = if (actionsOn) quoteId?.let { QuoteRef(it) } else null
+        val mentions = if (mentionGroup != null) toMentions(text, edit.ranges) else null
         im.launchCmd({ e ->
             sending = false
             app.toast.show(defaultMessage(errCode(e)))
         }) {
-            val r = im.client.send(convId, text)
+            val r = im.client.send(convId, text, quote, mentions)
             sending = false
             if (r is SendResult.Ok) { // 返回 Rejected 时不清空（规则 7）
                 value = TextFieldValue("")
+                edit = EditState("", 0)
+                onQuoteCancel()
                 onSent()
             }
         }
@@ -738,11 +1065,12 @@ private fun Composer(convId: String, onSent: () -> Unit) {
         val s = value.selection.min
         val t = value.selection.max
         val text = value.text.substring(0, s) + e + value.text.substring(t)
-        value = TextFieldValue(text, TextRange(s + e.length))
+        onChange(TextFieldValue(text, TextRange(s + e.length)))
     }
 
     Column(Modifier.fillMaxWidth().background(Tt.colors.surface)) {
         HorizontalDivider(color = Tt.colors.divider)
+        if (actionsOn && quoteId != null) QuoteBar(messages, quoteId, onQuoteCancel)
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             IconButton({
                 if (!emoji) keyboard?.hide()
@@ -763,8 +1091,8 @@ private fun Composer(convId: String, onSent: () -> Unit) {
             }
             BasicTextField(
                 value,
-                { value = it },
-                Modifier.weight(1f).tag("composer-input").heightIn(min = 44.dp).onFocusChanged {
+                { onChange(it) },
+                Modifier.weight(1f).tag("composer-input").heightIn(min = 44.dp).focusRequester(focus).onFocusChanged {
                     if (it.isFocused) {
                         emoji = false
                         attach = false
@@ -803,6 +1131,12 @@ private fun Composer(convId: String, onSent: () -> Unit) {
             }
         }
     }
+    if (mentionGroup != null && picker != null) {
+        MentionPicker(mentionGroup, onPick = { name, userId -> pickMention(name, userId) }) {
+            picker = null // @ 留作普通文字（问题 39）
+            runCatching { focus.requestFocus() }
+        }
+    }
     keepInfo?.let { uris ->
         Confirm(com.tianting.app.core.KEEP_METADATA_TIP, "发送", "keep-info-dialog", onCancel = { keepInfo = null }, onOk = {
             keepInfo = null
@@ -822,6 +1156,131 @@ private fun AttachTile(icon: androidx.compose.ui.graphics.vector.ImageVector, la
             Icon(icon, null, tint = Tt.colors.textSecondary)
         }
         T(label, style = Tt.type.caption, color = Tt.colors.textSecondary)
+    }
+}
+
+/** 可以 @ 的群（群聊且 features.msgActions 打开）：myRole 决定有没有"所有人"（F-MEN-02 规则 3）。 */
+internal data class MentionGroup(val groupId: String, val myRole: GroupRole?)
+
+/**
+ * 引用条（F-QUO-01、F-QUO-02 规则 3，第 13.4 节"引用条"）：显示已加载的那条消息，被撤回、删除时跟着变；草稿里只记 msgId，
+ * 这里不留原文；找不到时"引用内容不可用"（问题 41）。按纯文本显示（AC-QUO-02-5）。
+ */
+@Composable
+private fun QuoteBar(messages: List<Message>, msgId: String, onCancel: () -> Unit) {
+    val m = messages.firstOrNull { it.msgId == msgId }
+    val name = rememberDisplayName(m?.from ?: LocalIm.current.self)
+    val label = when {
+        m == null -> "引用内容不可用"
+        m.deleted -> if (m.recalled) "引用内容已被撤回" else "引用内容已被删除"
+        else -> "$name: ${quoteSummary(m)}"
+    }
+    Row(
+        Modifier.tag("quote-bar").fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp)
+            .clip(RoundedCornerShape(TtDimen.radiusSm.dp)).background(Tt.colors.bg),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(width = 3.dp, height = 32.dp).background(Tt.colors.brand))
+        T(label, Modifier.weight(1f).padding(horizontal = 8.dp).tag("quote-bar-text"), style = Tt.type.small, color = Tt.colors.textSecondary, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        IconButton(onCancel, Modifier.tag("quote-cancel").size(44.dp)) { Icon(TtIcons.close, "取消引用", tint = Tt.colors.textSecondary) }
+    }
+}
+
+private const val SEARCH_DELAY_MS = 300L // 每人每分钟 30 次（F-MEN-01 规则 6）：停下来再搜
+
+private enum class PickerState { LOADING, OK, ERROR }
+
+/**
+ * @ 成员选择（PRD-chat F-MEN-01 规则 4、6，F-MEN-02 规则 3，第 13.4 节"@ 选择"，问题 39）：底部面板，"搜索群成员"（keyword，停 300 毫秒再搜）；
+ * 加载中、无结果、加载失败（点了重试；关掉也可以继续发普通文本）；列表显示本机显示名（备注优先）、头像和 userId（同名靠这两样区分），
+ * 插入文字用公开昵称，没有昵称用 userId（R-CF-03）。"所有人"只给群主、管理员（AC-MEN-02-4）。列表不含自己（F-MEN-03 规则 6）。
+ */
+@Composable
+private fun MentionPicker(g: MentionGroup, onPick: (name: String, userId: String?) -> Unit, onClose: () -> Unit) {
+    val im = LocalIm.current
+    val scope = rememberCoroutineScope()
+    var keyword by remember { mutableStateOf("") }
+    var state by remember { mutableStateOf(PickerState.LOADING) }
+    var members by remember { mutableStateOf<List<GroupMemberInfo>>(emptyList()) }
+    var cursor by remember { mutableStateOf("") }
+    var attempt by remember { mutableIntStateOf(0) }
+    LaunchedEffect(keyword, attempt) {
+        state = PickerState.LOADING
+        if (keyword.isNotEmpty()) delay(SEARCH_DELAY_MS)
+        state = try {
+            val page = onMain { im.client.searchGroupMembers(g.groupId, keyword.trim()) }
+            members = page.members
+            cursor = page.nextCursor
+            PickerState.OK
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            com.tianting.app.core.AppLog.debug("member search failed: ${e.javaClass.simpleName}")
+            PickerState.ERROR
+        }
+    }
+    val list = members.filter { it.userId != im.self }
+    val canAll = (g.myRole == GroupRole.OWNER || g.myRole == GroupRole.ADMIN) && keyword.isBlank()
+    com.tianting.app.ui.TtSheet("mention-picker", onClose) {
+        T("选择提醒的人", style = Tt.type.title)
+        com.tianting.app.ui.TtInput(keyword, { keyword = it }, "mention-search", placeholder = "搜索群成员", keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search))
+        if (canAll) {
+            Row(
+                Modifier.tag("mention-all").fillMaxWidth().heightIn(min = TtDimen.sizeTouchMin.dp).clickable { onPick("所有人", null) },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.size(40.dp).clip(CircleShape).background(Tt.colors.brandFill), contentAlignment = Alignment.Center) { T("@", style = Tt.type.title, color = Tt.colors.onBrand) }
+                T("所有人", maxLines = 1)
+            }
+        }
+        when {
+            state == PickerState.LOADING -> T("加载中…", Modifier.tag("mention-loading").fillMaxWidth().padding(16.dp), color = Tt.colors.textSecondary, align = TextAlign.Center)
+            state == PickerState.ERROR -> T(
+                "加载失败，点击重试",
+                Modifier.tag("mention-error").fillMaxWidth().heightIn(min = TtDimen.sizeTouchMin.dp).clickable { attempt++ }.padding(16.dp),
+                color = Tt.colors.brand,
+                align = TextAlign.Center,
+            )
+            list.isEmpty() -> T("没有找到群成员", Modifier.tag("mention-empty").fillMaxWidth().padding(16.dp), color = Tt.colors.textSecondary, align = TextAlign.Center)
+            else -> for (m in list) {
+                val shown = im.nameOf(m.userId).let { if (it == m.userId && m.nickname.isNotEmpty()) m.nickname else it }
+                Row(
+                    Modifier.tag("mention-row").semantics(mergeDescendants = true) { dataUser = m.userId }.fillMaxWidth().heightIn(min = TtDimen.sizeTouchMin.dp)
+                        .clickable { onPick(m.nickname.ifEmpty { m.userId }, m.userId) },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Avatar(m.userId, shown, 40.dp, src = m.avatar)
+                    Column(Modifier.weight(1f)) {
+                        T(shown, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        T(m.userId, style = Tt.type.caption, color = Tt.colors.textSecondary, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+        if (state == PickerState.OK && cursor.isNotEmpty()) {
+            T(
+                "加载更多",
+                Modifier.tag("mention-more").fillMaxWidth().heightIn(min = TtDimen.sizeTouchMin.dp).clickable {
+                    scope.launch {
+                        try {
+                            val page = onMain { im.client.searchGroupMembers(g.groupId, keyword.trim(), cursor) }
+                            val seen = members.map { it.userId }.toSet()
+                            members = members + page.members.filter { it.userId !in seen }
+                            cursor = page.nextCursor
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            // 留着已有的列表，再点一次
+                        }
+                    }
+                }.padding(16.dp),
+                color = Tt.colors.brand,
+                align = TextAlign.Center,
+            )
+        }
+        androidx.compose.material3.TextButton(onClose, Modifier.tag("mention-cancel").fillMaxWidth().heightIn(min = TtDimen.sizeTouchMin.dp)) { T("取消", color = Tt.colors.textSecondary) }
     }
 }
 

@@ -60,7 +60,7 @@ class RealServer {
     }
 
     /** 调用方签名（protocol/ADMIN.md「鉴权」）：邀请码只接受这种方式。 */
-    private fun signed(method: String, path: String, body: JsonObject): JsonObject {
+    fun signed(method: String, path: String, body: JsonObject): JsonObject {
         val raw = if (method == "GET") "" else body.toString()
         val ts = System.currentTimeMillis().toString()
         val nonce = JBase64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(16).also { SecureRandom().nextBytes(it) })

@@ -179,13 +179,22 @@ private fun ConvSkeleton() {
 
 /**
  * 摘要（F-UI-04 规则 5）：提示消息用服务端摘要；图片"[图片]"、文件"[文件]"（不带文件名，F-FILE-02 规则 5、F-FILE-03 规则 5）；
- * custom 和不认识的类型统一文案；被删除的不带前缀。
+ * custom 和不认识的类型统一文案；被删除的不带前缀。最后一条被撤回：recall 给出的撤回文案（F-RCL-02 规则 1a，F-RCL-03 规则 4）。
  */
-internal fun summaryText(c: Conversation): String {
+internal fun summaryText(c: Conversation, recall: String? = null): String {
     val m = c.lastMsg ?: return ""
-    if (m.deleted) return MESSAGE_DELETED
+    if (m.deleted) return if (m.recalled && recall != null) recall else MESSAGE_DELETED
     if (m.type == MsgType.TEXT || m.type == MsgType.TIP) return m.text.orEmpty()
     return com.tianting.app.core.attachmentSummary(m.type) ?: "[暂不支持的消息]"
+}
+
+/** 摘要前缀（F-MEN-03 规则 2，R-CF-20）："[有人@我]" > "[草稿]"（"[N 条]"随 C5）。有提及时后面跟最后一条的摘要，不显示草稿（问题 38）。 */
+internal enum class SummaryPrefix { MENTION, DRAFT, NONE }
+
+internal fun summaryPrefix(c: Conversation, hasDraft: Boolean): SummaryPrefix = when {
+    (c.mentionUnread ?: 0) > 0 -> SummaryPrefix.MENTION
+    hasDraft -> SummaryPrefix.DRAFT
+    else -> SummaryPrefix.NONE
 }
 
 @Composable
@@ -197,7 +206,10 @@ private fun ConvItem(c: Conversation, now: Long, onClick: () -> Unit) {
     val remark = peer?.let { p -> im.friends.firstOrNull { it.userId == p }?.remark?.takeIf(String::isNotEmpty) }
     val name = remark ?: c.name
     val last = c.lastMsg
-    val draft = im.drafts[c.convId]
+    val draft = im.drafts[c.convId]?.takeIf { !it.isEmpty }?.text
+    val recallNotice = c.lastMsg?.let { im.client.recallNotice(c.convId, it) }
+    val recall = recallNotice?.let { rememberRecallText(it) }
+    val head = summaryPrefix(c, draft != null)
     val prefix = last?.from?.takeIf { group && it != im.self && last.type != MsgType.TIP && !last.deleted }
     val prefixName = prefix?.let { rememberDisplayName(it) }
     val peerProfile = peer?.let { rememberProfile(it) }
@@ -226,21 +238,32 @@ private fun ConvItem(c: Conversation, now: Long, onClick: () -> Unit) {
                 if (last != null) T(formatTime(last.ts, now), Modifier.tag("conv-time"), style = Tt.type.caption, color = Tt.colors.textTertiary, maxLines = 1)
             }
             val danger = Tt.colors.danger
-            val summary = when {
-                draft != null -> buildAnnotatedString {
+            val summary = when (head) {
+                SummaryPrefix.DRAFT -> buildAnnotatedString {
                     withStyle(SpanStyle(color = danger)) { append("[草稿]") }
                     append(" ")
-                    append(draft)
+                    append(draft.orEmpty())
                 }
                 else -> buildAnnotatedString {
+                    // "[有人@我]"和"[草稿]"同样用 danger（问题 38）
+                    if (head == SummaryPrefix.MENTION) {
+                        withStyle(SpanStyle(color = danger)) { append("[有人@我]") }
+                        append(" ")
+                    }
                     if (prefixName != null) append("$prefixName: ")
-                    append(summaryText(c))
+                    append(summaryText(c, recall))
                 }
             }
             if (summary.isNotEmpty()) {
                 Text(
                     summary,
-                    Modifier.tag(if (draft != null) "draft-tag" else "conv-summary"),
+                    Modifier.tag(
+                        when (head) {
+                            SummaryPrefix.DRAFT -> "draft-tag"
+                            SummaryPrefix.MENTION -> "mention-tag"
+                            SummaryPrefix.NONE -> "conv-summary"
+                        },
+                    ),
                     style = Tt.type.small,
                     color = Tt.colors.textSecondary,
                     maxLines = 1,

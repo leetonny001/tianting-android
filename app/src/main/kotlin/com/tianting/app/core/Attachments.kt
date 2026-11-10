@@ -18,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.tianting.sdk.DownloadAbortedError
 import com.tianting.sdk.FileInput
 import com.tianting.sdk.FileVariant
 import com.tianting.sdk.IMClient
@@ -78,7 +79,7 @@ fun queryMeta(resolver: ContentResolver, uri: Uri): Triple<String, Long?, String
  * 一次登录里图片和文件的操作。状态都是 Compose 的 snapshot state，只在主线程写（scope 是 ImSession 的 Main.immediate）。
  * 临时目录：pickDir 放选中内容的副本（处理完删除），procDir 放处理好的结果（SDK 复制进沙盒后删除）。
  */
-class MediaOps(private val context: Context, private val client: IMClient, private val scope: CoroutineScope) {
+class MediaOps(private val context: Context, private val client: IMClient, private val scope: CoroutineScope, private val toast: (String) -> Unit = {}) {
     private val pickDir = File(context.cacheDir, PICK_DIR)
     private val procDir = File(context.cacheDir, PROC_DIR)
 
@@ -173,7 +174,11 @@ class MediaOps(private val context: Context, private val client: IMClient, priva
         }
     }
 
-    /** 下载文件到私有缓存（F-FILE-03 规则 3）：有进度、可取消；失败显示"下载失败"，重试从 0 开始、重新申请地址（SDK）。 */
+    /**
+     * 下载文件到私有缓存（F-FILE-03 规则 3）：有进度、可取消；失败显示"下载失败"，重试从 0 开始、重新申请地址（SDK）。
+     * 下载中所在消息被撤回（PRD-chat F-RCL-03 规则 9，AC-RCL-03-12）：SDK 中止并删掉部分文件，抛 DownloadAbortedError，这里提示
+     * "该消息已被撤回"；被后台删除、过期的（recalled = false）气泡自己会变成"该消息已被删除""文件已过期"，不另外提示（问题 33）。
+     */
     fun startDownload(fileId: String) {
         if (downloadJobs[fileId]?.isActive == true) return
         downloads[fileId] = DownloadState.Running(0)
@@ -184,6 +189,9 @@ class MediaOps(private val context: Context, private val client: IMClient, priva
             } catch (e: CancellationException) {
                 downloads.remove(fileId)
                 throw e
+            } catch (e: DownloadAbortedError) {
+                downloads.remove(fileId)
+                if (e.recalled) toast(MESSAGE_RECALLED)
             } catch (e: Exception) {
                 AppLog.debug("download failed: ${e.javaClass.simpleName}")
                 downloads[fileId] = DownloadState.Failed
