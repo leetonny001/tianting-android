@@ -1013,6 +1013,17 @@ private fun Composer(
             if (d.isEmpty) im.drafts.remove(convId) else im.drafts[convId] = d
         }
     }
+    // 这个会话被删除（本端，或同一账号的其他设备，C5）：这台设备的草稿也清除，打开着的输入框一样（F-CVS-03 规则 7，frontend-chat 第 55 条）。
+    LaunchedEffect(convId) {
+        im.events.collect { e ->
+            if (e is com.tianting.sdk.IMEvent.ConvDeleted && e.convId == convId) {
+                value = TextFieldValue("")
+                edit = EditState("", 0, ranges = emptyList())
+                picker = null
+                onQuoteCancel()
+            }
+        }
+    }
     // 选了"引用"、选好了 @ 的人：焦点回到输入框（F-UI-10 规则 7）。
     LaunchedEffect(quoteFocus) { if (quoteFocus > 0) runCatching { focus.requestFocus() } }
 

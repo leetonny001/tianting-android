@@ -18,6 +18,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import coil.imageLoader
+import coil.memory.MemoryCache
 import com.tianting.sdk.DownloadAbortedError
 import com.tianting.sdk.FileInput
 import com.tianting.sdk.FileVariant
@@ -86,6 +88,9 @@ class MediaOps(private val context: Context, private val client: IMClient, priva
     /** 上传进度（百分比），按 clientMsgId。 */
     val progress = mutableStateMapOf<String, Int>()
 
+    /** 这次登录里发出的附件属于哪个会话（clientMsgId → convId）：删除会话时丢掉它们的进度（C5）。只在主线程读写。 */
+    private val owners = HashMap<String, String>()
+
     /** 文件气泡的下载状态，按 fileId。 */
     val downloads = mutableStateMapOf<String, DownloadState>()
     private val downloadJobs = HashMap<String, Job>()
@@ -144,6 +149,7 @@ class MediaOps(private val context: Context, private val client: IMClient, priva
             onProgress = { sent, total -> onProgress(holder, sent, total) { made?.let { deleteProcessed(it) }; made = null } },
         )
         holder[0] = m.clientMsgId
+        owners[m.clientMsgId] = convId
         return m
     }
 
@@ -153,6 +159,7 @@ class MediaOps(private val context: Context, private val client: IMClient, priva
         try {
             val m = client.sendFile(convId, FileInput(p.file, p.name, p.mime ?: "application/octet-stream")) { sent, total -> onProgress(holder, sent, total) {} }
             holder[0] = m.clientMsgId
+            owners[m.clientMsgId] = convId
             return m
         } finally {
             withContext(Dispatchers.IO) { p.file.delete() }
@@ -273,10 +280,36 @@ class MediaOps(private val context: Context, private val client: IMClient, priva
         return files.complete(up.fileId).fileId
     }
 
+    /**
+     * 删除会话（PRD-chat F-CVS-03 规则 7，frontend-chat 第 59 条）：SDK 已经取消上传、丢掉排队和失败的消息，这里丢掉它们的进度。
+     * alive 是这个会话现在还在的消息（其他端删除时本机没发出的还在，第 63 条），它们不动。
+     */
+    fun forgetConv(convId: String, alive: Set<String>) {
+        val gone = owners.filter { (id, c) -> c == convId && id !in alive }.keys
+        for (id in gone) {
+            owners.remove(id)
+            progress.remove(id)
+        }
+    }
+
+    /**
+     * 文件过期，或所在消息被撤回、删除，或会话删除时被清除（IMEvent.FilesExpired，F-FILE-06 规则 3、F-CVS-03 规则 6 ②）：SDK 已经删了
+     * 缓存文件，这里丢掉指向它们的下载状态和图片库内存里解码好的图（键 fileId + variant，和 DecodedImage 相同）。
+     * 正在下载的不在这里取消：SDK 自己中止它（DownloadAbortedError，撤回时要提示"该消息已被撤回"），startDownload 收尾。
+     */
+    fun forgetFiles(fileIds: List<String>) {
+        val memory = context.imageLoader.memoryCache
+        for (id in fileIds) {
+            if (downloadJobs[id]?.isActive != true) downloads.remove(id)
+            for (v in listOf("thumb", "original")) memory?.remove(MemoryCache.Key("$id:$v"))
+        }
+    }
+
     /** 退出登录：私有目录里的副本一起清掉（AC-FILE-07-9；SDK 清它自己的沙盒和下载缓存）。 */
     fun clear() {
         downloadJobs.values.forEach { it.cancel() }
         downloadJobs.clear()
+        owners.clear()
         clearTemp(context)
     }
 

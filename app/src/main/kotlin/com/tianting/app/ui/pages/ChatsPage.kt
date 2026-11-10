@@ -1,7 +1,7 @@
 package com.tianting.app.ui.pages
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +24,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,6 +39,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -45,6 +48,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import com.tianting.app.core.ImSession
 import com.tianting.app.core.MESSAGE_DELETED
@@ -53,13 +57,17 @@ import com.tianting.app.core.USER_ID_RE
 import com.tianting.app.core.applyPath
 import com.tianting.app.core.chatPath
 import com.tianting.app.core.defaultMessage
+import com.tianting.app.core.errCode
+import com.tianting.app.core.messageFor
 import com.tianting.app.core.formatTime
 import com.tianting.app.ui.Avatar
 import com.tianting.app.ui.Badge
+import com.tianting.app.ui.Confirm
 import com.tianting.app.ui.ConnBanner
 import com.tianting.app.ui.EmptyState
 import com.tianting.app.ui.FieldError
 import com.tianting.app.ui.IconBtn
+import com.tianting.app.ui.LocalApp
 import com.tianting.app.ui.LocalIm
 import com.tianting.app.ui.LocalNav
 import com.tianting.app.ui.OfficialTag
@@ -71,6 +79,7 @@ import com.tianting.app.ui.TtDialog
 import com.tianting.app.ui.TtInput
 import com.tianting.app.ui.badgeText
 import com.tianting.app.ui.dataConvId
+import com.tianting.app.ui.dataPinned
 import com.tianting.app.ui.tag
 import com.tianting.app.ui.theme.Tt
 import com.tianting.app.ui.theme.TtDimen
@@ -78,6 +87,7 @@ import com.tianting.app.ui.theme.TtIcons
 import com.tianting.sdk.ApplySource
 import com.tianting.sdk.ConvType
 import com.tianting.sdk.Conversation
+import com.tianting.sdk.IMEvent
 import com.tianting.sdk.MsgType
 import com.tianting.sdk.Relation
 import com.tianting.sdk.SocialMode
@@ -95,6 +105,33 @@ fun ChatsPage() {
     var dialog by rememberSaveable { mutableStateOf(false) }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val app = LocalApp.current
+    // 会话菜单（PRD-chat 第 13.3 节，F-UI-04 规则 9 随 C5 改写）：features.convSettings 打开才有（AC-CVS-01-6）。
+    // 只记 convId：菜单文字按会话当前的状态（其他端改了也跟着变）；会话不在列表里了菜单就不显示。
+    val convMenuOn = im.convSettings
+    var menuFor by remember { mutableStateOf<String?>(null) }
+    var deleting by remember { mutableStateOf<String?>(null) }
+    // 菜单、确认框开着时会话被其他端删除：关掉，免得会话重新出现时又冒出来。
+    LaunchedEffect(im) {
+        im.events.collect { e ->
+            if (e is IMEvent.ConvDeleted) {
+                if (menuFor == e.convId) menuFor = null
+                if (deleting == e.convId) deleting = null
+            }
+        }
+    }
+
+    // SDK 乐观更新，失败回滚并抛出，这里只提示，不自动重试（frontend-chat 第 56 条）：4220"最多置顶 20 个会话"，4290"操作过于频繁"，
+    // 超时、断线按服务异常。
+    fun pick(c: Conversation, action: ConvAction) {
+        menuFor = null
+        val fail: (Throwable) -> Unit = { app.toast.show(messageFor(errCode(it), if (action == ConvAction.DELETE) "convDelete" else "convSet")) }
+        when (action) {
+            ConvAction.PIN -> im.launchCmd(fail) { im.client.setConvPinned(c.convId, !c.pinned) }
+            ConvAction.NOTIFY -> im.launchCmd(fail) { im.client.setConvNotifyOff(c.convId, !c.notifyOff) }
+            ConvAction.DELETE -> deleting = c.convId // 先确认（F-CVS-03 规则 7）
+        }
+    }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -136,7 +173,11 @@ fun ChatsPage() {
             } else {
                 LazyColumn(Modifier.tag("conv-list"), state = list) {
                     items(im.convs, key = { it.convId }, contentType = { "conv" }) { c ->
-                        ConvItem(c, now) { nav.go(chatPath(c.convId)) }
+                        ConvItem(
+                            c,
+                            now,
+                            menu = if (convMenuOn) ConvMenu(menuFor == c.convId, { menuFor = c.convId }, { menuFor = null }) { pick(c, it) } else null,
+                        ) { nav.go(chatPath(c.convId)) }
                     }
                     if (im.truncated) {
                         item("truncated") {
@@ -155,7 +196,32 @@ fun ChatsPage() {
         TabBar("/chats", onReselectChats = { scope.launch { list.animateScrollToItem(0) } })
     }
     if (dialog) StartChatDialog { dialog = false }
+    val target = deleting
+    if (target != null) {
+        // 确认后才删（F-CVS-03 规则 7，AC-CVS-03-8）：草稿由 ConvDeleted 清（ImSession），失败消息、上传和排队的附件、缓存文件由 SDK 清
+        // （第 59 条）。失败时 SDK 让会话恢复，草稿也还在。取消时什么都不变。
+        Confirm(DELETE_CONV_CONFIRM, "删除", "conv-delete-dialog", danger = true, onCancel = { deleting = null }) {
+            deleting = null
+            im.launchCmd({ app.toast.show(messageFor(errCode(it), "convDelete")) }) { im.client.deleteConv(target) }
+        }
+    }
 }
+
+/** 删除会话的确认框（PRD-chat F-CVS-03 规则 7）。 */
+internal const val DELETE_CONV_CONFIRM = "删除后聊天记录不再显示，确定删除？"
+
+/** 会话菜单的三项（F-CVS-01～03，第 13.3 节）。 */
+internal enum class ConvAction { PIN, NOTIFY, DELETE }
+
+/** 菜单项的文字按会话当前的状态（TC-CVS-01-06）。 */
+internal fun convActionLabel(c: Conversation, a: ConvAction): String = when (a) {
+    ConvAction.PIN -> if (c.pinned) "取消置顶" else "置顶"
+    ConvAction.NOTIFY -> if (c.notifyOff) "取消免打扰" else "免打扰"
+    ConvAction.DELETE -> "删除"
+}
+
+/** 一个会话项的菜单：open 时显示；features.convSettings 关闭时整个是 null（长按、辅助操作都没有）。 */
+internal class ConvMenu(val open: Boolean, val onOpen: () -> Unit, val onDismiss: () -> Unit, val onPick: (ConvAction) -> Unit)
 
 @Composable
 private fun PlusItem(text: String, tag: String, onClick: () -> Unit) {
@@ -188,17 +254,25 @@ internal fun summaryText(c: Conversation, recall: String? = null): String {
     return com.tianting.app.core.attachmentSummary(m.type) ?: "[暂不支持的消息]"
 }
 
-/** 摘要前缀（F-MEN-03 规则 2，R-CF-20）："[有人@我]" > "[草稿]"（"[N 条]"随 C5）。有提及时后面跟最后一条的摘要，不显示草稿（问题 38）。 */
-internal enum class SummaryPrefix { MENTION, DRAFT, NONE }
+/**
+ * 摘要前缀（F-MEN-03 规则 2，R-CF-20，PRD-ui F-UI-04 规则 5）：只显示一个，"[有人@我]" > "[草稿]" > "[N 条]"（免打扰且有未读，
+ * F-CVS-02 规则 5，C5）。有提及时后面跟最后一条的摘要，不显示草稿（问题 38）。
+ */
+internal enum class SummaryPrefix { MENTION, DRAFT, COUNT, NONE }
 
 internal fun summaryPrefix(c: Conversation, hasDraft: Boolean): SummaryPrefix = when {
     (c.mentionUnread ?: 0) > 0 -> SummaryPrefix.MENTION
     hasDraft -> SummaryPrefix.DRAFT
+    c.notifyOff && c.unread > 0 -> SummaryPrefix.COUNT
     else -> SummaryPrefix.NONE
 }
 
+/** 免打扰会话的"[N 条]"：N 照实显示，不按角标的"99+"（这是摘要不是角标，frontend-chat 第 61 条）。 */
+internal fun unreadCountText(unread: Long): String = "[$unread 条]"
+
 @Composable
-private fun ConvItem(c: Conversation, now: Long, onClick: () -> Unit) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun ConvItem(c: Conversation, now: Long, menu: ConvMenu?, onClick: () -> Unit) {
     val im = LocalIm.current
     val group = c.type == ConvType.GROUP
     val peer = peerId(c, im.self)
@@ -213,21 +287,36 @@ private fun ConvItem(c: Conversation, now: Long, onClick: () -> Unit) {
     val prefix = last?.from?.takeIf { group && it != im.self && last.type != MsgType.TIP && !last.deleted }
     val prefixName = prefix?.let { rememberDisplayName(it) }
     val peerProfile = peer?.let { rememberProfile(it) }
+    // 长按菜单的辅助操作（第 13.4 节）：三项直接可选，"删除"同样先弹确认框。
+    val actions = menu?.let { m -> ConvAction.entries.map { a -> CustomAccessibilityAction(convActionLabel(c, a)) { m.onPick(a); true } } }
+    Box {
     Row(
         Modifier
             .tag("conv-item")
-            .semantics { dataConvId = c.convId }
+            .semantics {
+                dataConvId = c.convId
+                dataPinned = c.pinned.toString()
+                if (actions != null) customActions = actions
+            }
             .fillMaxWidth()
             .heightIn(min = TtDimen.sizeConvItem.dp)
-            .background(Tt.colors.surface)
-            .clickable(onClick = onClick)
+            // 置顶项的背景区分（AC-CVS-01-6，frontend-chat 第 57 条）：color.surface.pinned，有深色值
+            .background(if (c.pinned) Tt.colors.surfacePinned else Tt.colors.surface)
+            .combinedClickable(onLongClickLabel = if (menu != null) "会话操作" else null, onLongClick = menu?.onOpen, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box {
             Avatar(id, name, 48.dp, group = group, src = peerProfile?.avatar)
-            if (c.unread > 0) Badge(badgeText(c.unread), "conv-badge", Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-4).dp))
+            if (c.unread > 0) {
+                if (c.notifyOff) {
+                    // 免打扰：小红点、没有数字（F-CVS-02 规则 5；有 @ 我也是小红点，frontend-chat 第 61 条）。数量在摘要的"[N 条]"里
+                    Box(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).tag("conv-dot").size(10.dp).clip(CircleShape).background(Tt.colors.badgeBg))
+                } else {
+                    Badge(badgeText(c.unread), "conv-badge", Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-4).dp))
+                }
+            }
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -245,32 +334,50 @@ private fun ConvItem(c: Conversation, now: Long, onClick: () -> Unit) {
                     append(draft.orEmpty())
                 }
                 else -> buildAnnotatedString {
-                    // "[有人@我]"和"[草稿]"同样用 danger（问题 38）
+                    // "[有人@我]"和"[草稿]"同样用 danger（问题 38）；"[N 条]"和摘要同色（和 H5 相同）
                     if (head == SummaryPrefix.MENTION) {
                         withStyle(SpanStyle(color = danger)) { append("[有人@我]") }
                         append(" ")
                     }
+                    if (head == SummaryPrefix.COUNT) append(unreadCountText(c.unread) + " ")
                     if (prefixName != null) append("$prefixName: ")
                     append(summaryText(c, recall))
                 }
             }
-            if (summary.isNotEmpty()) {
-                Text(
-                    summary,
-                    Modifier.tag(
-                        when (head) {
-                            SummaryPrefix.DRAFT -> "draft-tag"
-                            SummaryPrefix.MENTION -> "mention-tag"
-                            SummaryPrefix.NONE -> "conv-summary"
-                        },
-                    ),
-                    style = Tt.type.small,
-                    color = Tt.colors.textSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+            if (summary.isNotEmpty() || c.notifyOff) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        summary,
+                        Modifier.weight(1f).tag(
+                            when (head) {
+                                SummaryPrefix.DRAFT -> "draft-tag"
+                                SummaryPrefix.MENTION -> "mention-tag"
+                                SummaryPrefix.COUNT -> "unread-count-tag"
+                                SummaryPrefix.NONE -> "conv-summary"
+                            },
+                        ),
+                        style = Tt.type.small,
+                        color = Tt.colors.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    // 免打扰图标（F-CVS-02 规则 5），有可读名称（AC-CVS-02-3）
+                    if (c.notifyOff) Icon(TtIcons.notifyOff, "免打扰", Modifier.size(16.dp).tag("notify-off-icon"), tint = Tt.colors.textTertiary)
+                }
+            }
+        }
+    }
+    if (menu != null) {
+        DropdownMenu(menu.open, menu.onDismiss, Modifier.tag("conv-menu"), offset = DpOffset(72.dp, (-8).dp), containerColor = Tt.colors.surface) {
+            for (a in ConvAction.entries) {
+                DropdownMenuItem(
+                    text = { T(convActionLabel(c, a), color = if (a == ConvAction.DELETE) Tt.colors.danger else Tt.colors.textPrimary) },
+                    onClick = { menu.onPick(a) },
+                    modifier = Modifier.tag("conv-menu-" + a.name.lowercase()).heightIn(min = TtDimen.sizeTouchMin.dp),
                 )
             }
         }
+    }
     }
     HorizontalDivider(color = Tt.colors.divider)
 }

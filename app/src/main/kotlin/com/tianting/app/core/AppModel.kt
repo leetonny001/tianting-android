@@ -78,7 +78,21 @@ class AppDeps(
     val pickForTest: ((PickKind) -> List<android.net.Uri>?)? = null,
     /** 测试替身：代替 SAF 的"保存到"（返回目标 Uri，null 是取消）。正式运行为 null。 */
     val saveForTest: ((name: String) -> android.net.Uri?)? = null,
+    /** 新消息的提示音、震动（PRD-chat F-CVS-02 规则 6）。见 MessageAlert。 */
+    val alert: MessageAlert = MessageAlert.NONE,
 )
+
+/**
+ * 新消息的提示音、震动的出口（AC-CVS-02-6）。C5 时 App 没有提示音、震动和系统通知的代码，这里从不调用；测试放一个记录调用的替身，
+ * 断言免打扰会话的消息没有调用它。C3 加通知、提示音时从这里出，按会话的 notifyOff 判断，FE-653 补跑 TC-CVS-02-06（frontend-chat 第 58 条）。
+ */
+fun interface MessageAlert {
+    fun play(convId: String)
+
+    companion object {
+        val NONE = MessageAlert { }
+    }
+}
 
 /** 选什么：相册里的图片（照片选择器）、任意文件（SAF）、头像（单张图片）。 */
 enum class PickKind { IMAGES, FILES, AVATAR }
@@ -273,6 +287,7 @@ class AppModel(context: Context, val deps: AppDeps) {
         }
         session.filesFeature = { cachedConfig?.features?.files == true }
         session.msgActionsFeature = { cachedConfig?.features?.msgActions == true }
+        session.convSettingsFeature = { cachedConfig?.features?.convSettings == true }
         session.start(deps.bindNetwork) { c -> if (isAccount) c.connect(account.tokenProvider) else c.connect(s.accessToken) }
         im = session
     }

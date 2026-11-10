@@ -219,6 +219,9 @@ class TokensTest {
         Triple("bubble.other.text", "bubble.other.bg", 4.5), Triple("text.secondary", "bubble.other.bg", 4.5), Triple("danger", "surface", 4.5), Triple("danger", "chat.bg", 3.0),
         Triple("on.badge", "badge.bg", 4.5), Triple("warning.text", "warning.bg", 4.5), Triple("border.input", "surface", 3.0), Triple("text.tertiary", "chat.bg", 3.0),
         Triple("border.input", "bg", 3.0), Triple("danger", "bg", 4.5),
+        // C5 置顶会话的背景（frontend-chat 第 57 条，PRD-ui v1.5 6.2 节 L27～L31、D27～D31）：名字、摘要、时间和免打扰图标、"[草稿]"，小红点（非文字 3:1）
+        Triple("text.primary", "surface.pinned", 4.5), Triple("text.secondary", "surface.pinned", 4.5), Triple("text.tertiary", "surface.pinned", 4.5),
+        Triple("danger", "surface.pinned", 4.5), Triple("badge.bg", "surface.pinned", 3.0),
     )
 
     @Test fun contrast_pairs() {

@@ -52,6 +52,7 @@ private val BY_CODE: Map<Int, String> = mapOf(
     4135 to "加入的群聊已达上限",
     4136 to "管理员最多 10 人",
     4137 to "对方回复之前，发送的消息数量已达上限",
+    4220 to "最多置顶 20 个会话", // 置顶已满（PRD-chat F-CVS-01 规则 2）
     4290 to "发送太频繁，请稍后再试",
     4292 to "今天的次数已用完，明天再试",
     4293 to "@所有人次数已用完",
@@ -65,6 +66,9 @@ private val BY_CMD: Map<String, String> = mapOf(
     "friendRemark:4040" to "对方已不在你的通讯录中",
     "groupCreate:4130" to "群成员已达上限",
     "groupInvite:4130" to "群成员已达上限",
+    // 会话设置、删除（C5）：每人每秒 5 次（F-CVS-04 规则 4），不自动重试（frontend-chat 第 56 条）
+    "convSet:4290" to "操作过于频繁",
+    "convDelete:4290" to "操作过于频繁",
 )
 
 /** 按错误码的默认文案：不认识的 4xxx 提示"请求出错"，5xxx 提示"服务异常，请稍后重试"（C-09）。 */

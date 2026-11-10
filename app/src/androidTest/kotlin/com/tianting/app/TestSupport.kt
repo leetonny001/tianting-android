@@ -95,10 +95,13 @@ fun convJson(
     modVer: Long? = null,
     mentionUnread: Long? = null,
     firstMentionSeq: Long? = null,
+    pinnedAt: Long? = null,
+    notifyOff: Boolean? = null,
+    minSeq: Long = 1,
 ): JsonObject {
     val m = linkedMapOf<String, Any?>(
         "convId" to convId, "type" to if (convId.startsWith("group:")) "group" else "c2c", "name" to name, "maxSeq" to maxSeq,
-        "readSeq" to maxSeq - unread, "minSeq" to 1, "unread" to unread, "lastMsg" to lastMsg, "updatedAt" to updatedAt,
+        "readSeq" to maxSeq - unread, "minSeq" to minSeq, "unread" to unread, "lastMsg" to lastMsg, "updatedAt" to updatedAt,
     )
     memberCount?.let { m["memberCount"] = it }
     if (allMuted) m["allMuted"] = true
@@ -106,6 +109,12 @@ fun convJson(
     modVer?.let { m["modVer"] = it }
     mentionUnread?.let { m["mentionUnread"] = it }
     firstMentionSeq?.let { m["firstMentionSeq"] = it }
+    // 置顶、免打扰（C5）：pinnedAt 不为空就是置顶
+    if (pinnedAt != null) {
+        m["pinned"] = true
+        m["pinnedAt"] = pinnedAt
+    }
+    notifyOff?.let { m["notifyOff"] = it }
     return js(m).jsonObject
 }
 
@@ -363,6 +372,8 @@ class FakeAccountHttp(var user: String = "alice") : HttpTransport {
     var files = false
     /** features.msgActions（C4 撤回、引用、@）；null 时不带这个字段（老服务端，问题 36）。 */
     var msgActions: Boolean? = null
+    /** features.convSettings（C5 置顶、免打扰、删除会话）；null 时不带这个字段（老服务端按关闭）。 */
+    var convSettings: Boolean? = null
     var privacy: JsonObject? = null
     var eventsBody: JsonObject = obj("events" to emptyList<JsonObject>(), "otherSessions" to obj("count" to 0))
     private var nextGen = 2L
@@ -398,7 +409,7 @@ class FakeAccountHttp(var user: String = "alice") : HttpTransport {
 
     private fun configBody(): JsonObject {
         val m = linkedMapOf<String, Any?>(
-            "registerMode" to registerMode, "demoLogin" to demoLogin, "features" to (if (msgActions == null) obj("files" to files) else obj("files" to files, "msgActions" to msgActions)),
+            "registerMode" to registerMode, "demoLogin" to demoLogin, "features" to js(linkedMapOf<String, Any?>("files" to files, "msgActions" to msgActions, "convSettings" to convSettings).filterValues { it != null }),
             "limits" to obj("usernameMinLen" to 4, "usernameMaxLen" to 32, "passwordMinLen" to 8, "passwordMaxLen" to 128, "nicknameMaxLen" to 32, "deviceNameMaxLen" to 64),
         )
         privacy?.let { m["privacyNotice"] = it }
@@ -520,6 +531,8 @@ abstract class UiTest {
     var objects: com.tianting.sdk.ObjectTransport? = null
     var pickForTest: ((com.tianting.app.core.PickKind) -> List<Uri>?)? = null
     var saveForTest: ((String) -> Uri?)? = null
+    /** 提示音的替身（AC-CVS-02-6）：记录调用。 */
+    val alerts = CopyOnWriteArrayList<String>()
 
     fun newDeps(
         transport: Transport = server,
@@ -549,6 +562,7 @@ abstract class UiTest {
             },
             pickForTest = pickForTest,
             saveForTest = saveForTest,
+            alert = { convId -> alerts.add(convId) },
         )
     }
 

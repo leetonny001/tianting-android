@@ -67,6 +67,17 @@ scripts/run-tests.sh e2e com.tianting.app.C4E2eTest      # 撤回、引用、@ �
 scripts/run-tests.sh kill C4KillE2e.recallWhileKilled    # App 被杀时被撤回（AC-RCL-03-4）
 ```
 
+## 置顶、免打扰、删除会话（C5）
+
+服务端 `GET /v1/config` 的 `features.convSettings` 打开才有会话菜单（长按，辅助操作里有同样三项）："置顶 / 取消置顶""免打扰 / 取消免打扰""删除"，文字按当前状态；关闭时没有菜单，已有的置顶、免打扰照常显示。SDK 乐观更新，失败回滚，页面只提示（4220"最多置顶 20 个会话"，4290"操作过于频繁"），不自动重试。置顶项背景 `color.surface.pinned`（和 tianting-web 同一个 token），免打扰会话未读显示小红点、摘要前"[N 条]"、右侧 `bell-off` 图标；摘要前缀"[有人@我]" > "[草稿]" > "[N 条]"。"消息"标签角标用 SDK 的 `totalUnread`（免打扰会话只算 @ 我）。删除先确认；本端删除成功或其他设备删除（`IMEvent.ConvDeleted`）时清这台设备的草稿（含打开着的输入框），失败消息、上传、缓存文件由 SDK 清。App 没有提示音和系统通知代码，`AppDeps.alert` 是留给 C3 的出口（现在不调用）。
+
+`scripts/test-server.sh` 默认 `IM_CONV_SETTINGS_ENABLED=1`。
+
+```bash
+scripts/run-tests.sh e2e com.tianting.app.C5E2eTest        # 多端同步、删除后重新出现、清除缓存文件，对真实 im-server
+scripts/run-tests.sh kill C5KillE2e.deletedWhileKilled      # D2 离线时被删除，冷启动后本地库和缓存搜不到（AC-CVS-03-10）
+```
+
 ## 系统通知
 
 `scripts/test-server.sh` 打开 `IM_PUSH_ENABLED`。推送游标在 no-backup 目录的文件里（`AndroidPushCursorStore`），退出、被踢、库重建都不清；`ui.noticeSeen.{userId}` 只有一个数字，退出登录时删除，被踢时不删。列表只在内存，重启后为空，页面底部有说明（PRD-live F-PUSH-12 规则 6）。

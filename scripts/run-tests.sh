@@ -2,7 +2,7 @@
 # 在已连接的模拟器上跑 UI 测试（只装卸 com.tianting.* 自己的包）。
 #   scripts/run-tests.sh ui                  假服务端的 Compose UI Test（不需要服务端）
 #   scripts/run-tests.sh e2e                 对真实 im-server 的端到端（自动启停 scripts/test-server.sh）
-#   scripts/run-tests.sh kill [场景…]        真实杀进程（AC-ACC-03-13、03-20、05-7、04-6，AC-FILE-07-1，AC-RCL-03-4）：每个场景两次 am instrument，第一次在暂停点退出进程
+#   scripts/run-tests.sh kill [场景…]        真实杀进程（AC-ACC-03-13、03-20、05-7、04-6，AC-FILE-07-1，AC-RCL-03-4，AC-CVS-03-10）：每个场景两次 am instrument，第一次在暂停点退出进程
 #   scripts/run-tests.sh shots               截图巡检，PNG 拉到 shots/
 #   scripts/run-tests.sh class <类或类#方法>  只跑指定用例
 # 设备用 ANDROID_SERIAL 选（默认 adb 唯一的设备，有多台时报错）。
@@ -16,7 +16,7 @@ adb="$ANDROID_HOME/platform-tools/adb"
 [[ -n "${ANDROID_SERIAL:-}" ]] && adb="$adb -s $ANDROID_SERIAL"
 pkg=com.tianting.app
 runner="$pkg.test/androidx.test.runner.AndroidJUnitRunner"
-UI_CLASSES="$pkg.NavLoginTest,$pkg.ConvListTest,$pkg.ChatTest,$pkg.SocialTest,$pkg.M4Test,$pkg.ModerationUiTest,$pkg.NoticesUiTest,$pkg.PolicyTest,$pkg.LayoutScaleTest,$pkg.AccountUiTest,$pkg.SessionUiTest,$pkg.FilesUiTest,$pkg.C4UiTest"
+UI_CLASSES="$pkg.NavLoginTest,$pkg.ConvListTest,$pkg.ChatTest,$pkg.SocialTest,$pkg.M4Test,$pkg.ModerationUiTest,$pkg.NoticesUiTest,$pkg.PolicyTest,$pkg.LayoutScaleTest,$pkg.AccountUiTest,$pkg.SessionUiTest,$pkg.FilesUiTest,$pkg.C4UiTest,$pkg.C5UiTest"
 
 # 先编译再用 adb 装：只碰 ANDROID_SERIAL 指定的设备（gradle 的 install 任务会枚举所有已连接设备）。多台设备时没有设置 ANDROID_SERIAL 就报错。
 install() {
@@ -84,7 +84,7 @@ case "${1:-}" in
     install
     fail=0
     # 场景：方法名前缀（默认在 AccountKillE2e），或"类.前缀"。
-    cases=(refreshSaved refreshResponseLost savePage logoutInFlight FilesKillE2e.uploadKilled C4KillE2e.recallWhileKilled)
+    cases=(refreshSaved refreshResponseLost savePage logoutInFlight FilesKillE2e.uploadKilled C4KillE2e.recallWhileKilled C5KillE2e.deletedWhileKilled)
     [[ -n "${2:-}" ]] && read -r -a cases <<< "$2"
     for c in "${cases[@]}"; do
       echo "== $c"

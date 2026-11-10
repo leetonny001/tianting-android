@@ -6,6 +6,7 @@
 # http://127.0.0.1:$TT_S3_PORT，模拟器要先 adb reverse 同一个端口（run-tests.sh 做）。TT_FILES=0 时不启动、不打开文件功能。
 # TT_S3_ORIGINS：假 S3 的 CORS 放行的源（逗号分隔，默认不放行；FE-640 跨端用例里 H5 的页面也连这个服务端）。
 # 撤回、引用、@（C4）：默认 IM_MSG_ACTIONS_ENABLED=1（要 IM_QUARANTINE_KEY，下面随机生成），IM_MSG_ACTIONS_ENABLED=0 关掉。
+# 置顶、免打扰、删除会话（C5）：默认 IM_CONV_SETTINGS_ENABLED=1，IM_CONV_SETTINGS_ENABLED=0 关掉。
 # 其他 IM_* 环境变量（例如 IM_ACCESS_TTL=30s）原样传给服务端。
 # TT_SERVER_STATE_DIR：服务端二进制、库、日志、env 放哪（默认 build/test-server），可以指到仓库外的临时目录。
 # 服务端源码默认在同级目录 ../tianting-server/server 或 ../im-mvp/server，也可以用 TIANTING_SERVER_DIR 指定。
@@ -98,6 +99,7 @@ IM_DEMO_LOGIN=1 \
 IM_V13_ADMIN_FEATURES=1 \
 IM_PUSH_ENABLED=1 \
 IM_MSG_ACTIONS_ENABLED="${IM_MSG_ACTIONS_ENABLED:-1}" \
+IM_CONV_SETTINGS_ENABLED="${IM_CONV_SETTINGS_ENABLED:-1}" \
 IM_REGISTER_MODE=invite \
 IM_PRIVACY_NOTICE_VERSION=v1 \
 IM_PRIVACY_NOTICE_URL="http://10.0.2.2:$port/readyz" \

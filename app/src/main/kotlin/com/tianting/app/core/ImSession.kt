@@ -116,6 +116,14 @@ class ImSession(
 
     val msgActions: Boolean get() = msgActionsFeature()
 
+    /**
+     * 服务端配置的 features.convSettings（C5，IM_CONV_SETTINGS_ENABLED）：关闭时会话列表长按没有菜单、没有辅助操作；已有的置顶、
+     * 免打扰照常显示（P-46 ②）。老服务端没有这个字段按关闭。
+     */
+    var convSettingsFeature: () -> Boolean = { false }
+
+    val convSettings: Boolean get() = convSettingsFeature()
+
     /** 私聊权限提示条的来源（F-UI-31）：clientMsgId → 错误码。只在内存。 */
     val sendTips = mutableStateMapOf<String, Int>()
 
@@ -161,6 +169,8 @@ class ImSession(
                     is IMEvent.SecurityNotice -> securityNoticeText(e.kind)?.let(toast) // AC-ACC-02-13、AC-ACC-03-25、AC-ACC-03-45
                     is IMEvent.RecoveryCodeUnacked -> onRecoveryCodeUnacked()
                     is IMEvent.ProfileChanged -> fetchProfiles(listOf(e.userId)) // SDK 已经更新缓存，这里取到的就是新昵称（AC-ACC-06-5）
+                    is IMEvent.ConvDeleted -> onConvDeleted(e.convId)
+                    is IMEvent.FilesExpired -> media?.forgetFiles(e.fileIds)
                     else -> Unit
                 }
                 _events.emit(e)
@@ -187,6 +197,17 @@ class ImSession(
             4031 -> Unit
             else -> toast(messageFor(code, "send"))
         }
+    }
+
+    /**
+     * 会话被删除（本端删除成功，或同一账号的其他设备删除，PRD-chat F-CVS-03 规则 7、F-CVS-04 规则 1）：这台设备上这个会话的草稿清除
+     * （frontend-chat 第 55 条）。失败消息、上传和排队的附件、缓存文件 SDK 已经清了（第 59 条），这里丢掉它们在界面上的进度；
+     * 其他端删除时本机没发出的消息还在（第 63 条），它们的进度不动。打开着的输入框自己听这个事件清空（ChatPage）。
+     */
+    private fun onConvDeleted(convId: String) {
+        drafts.remove(convId)
+        val alive = client.messages(convId).mapTo(HashSet()) { it.clientMsgId }
+        media?.forgetConv(convId, alive)
     }
 
     /** 显示名：好友备注 → 昵称 → userId。 */

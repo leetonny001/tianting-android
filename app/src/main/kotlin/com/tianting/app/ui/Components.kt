@@ -94,6 +94,8 @@ val DataClientMsgId = SemanticsPropertyKey<String>("data-client-msg-id")
 val DataKind = SemanticsPropertyKey<String>("data-kind")
 val DataError = SemanticsPropertyKey<String>("data-error")
 val DataEditable = SemanticsPropertyKey<String>("data-editable")
+/** 会话项是否置顶（"true" / "false"，同 H5 的 data-pinned，C5）。 */
+val DataPinned = SemanticsPropertyKey<String>("data-pinned")
 var SemanticsPropertyReceiver.dataUser by DataUser
 var SemanticsPropertyReceiver.dataConvId by DataConvId
 var SemanticsPropertyReceiver.dataStatus by DataStatus
@@ -101,6 +103,7 @@ var SemanticsPropertyReceiver.dataClientMsgId by DataClientMsgId
 var SemanticsPropertyReceiver.dataKind by DataKind
 var SemanticsPropertyReceiver.dataError by DataError
 var SemanticsPropertyReceiver.dataEditable by DataEditable
+var SemanticsPropertyReceiver.dataPinned by DataPinned
 
 /** 消息行的标记（C4）：highlight（引用、"有人@我"跳转后高亮）、mention（被 @ 的是我，整体样式提示），多个用空格分开。 */
 val DataMark = SemanticsPropertyKey<String>("data-mark")
