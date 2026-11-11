@@ -8,6 +8,7 @@
 # 设备用 ANDROID_SERIAL 选（默认 adb 唯一的设备，有多台时报错）。
 # TT_SERVER_RUNNING=1：e2e、kill 用已经由 scripts/test-server.sh start 起好的服务端（读 build/test-server/env，或 TT_SERVER_STATE_DIR），结束时不停它
 #   （FE-640 跨端用例：三端轮流连同一个服务端）。TT_XP、TT_XP_FROM 原样作为 ttXp、ttXpFrom 传给用例（CrossPlatformE2e）。
+# TT_XP_COORD_PORT：FE-686 C5 跨端的信号板端口（CrossPlatformC5E2e，ttXpCoord）。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
@@ -56,10 +57,16 @@ start_server() {
   e2e_args=(-e ttAdminKey "$TT_ADMIN_KEY" -e ttCallerId "$TT_CALLER_ID" -e ttCallerSecret "$TT_CALLER_SECRET" -e ttAdminUrl "http://10.0.2.2:$TT_ADMIN_PORT" -e ttMetricsUrl "http://10.0.2.2:$TT_METRICS_PORT/metrics" -e ttS3Url "http://127.0.0.1:${TT_S3_PORT:-0}" -e ttFiles "${TT_FILES:-0}" -e ttImLoopback "ws://127.0.0.1:$TT_PORT/ws")
   if [[ -n "${TT_XP:-}" ]]; then e2e_args+=(-e ttXp "$TT_XP"); fi
   if [[ -n "${TT_XP_FROM:-}" ]]; then e2e_args+=(-e ttXpFrom "$TT_XP_FROM"); fi
+  # FE-686 C5 跨端（两端同时在线）：协调脚本的信号板在 Mac 的 TT_XP_COORD_PORT，经 adb reverse 转过来（飞行模式下也通）。
+  if [[ -n "${TT_XP_COORD_PORT:-}" ]]; then
+    $adb reverse "tcp:$TT_XP_COORD_PORT" "tcp:$TT_XP_COORD_PORT" > /dev/null
+    e2e_args+=(-e ttXpCoord "http://127.0.0.1:$TT_XP_COORD_PORT")
+  fi
 }
 stop_server() {
   if [[ -n "${TT_S3_PORT:-}" ]]; then $adb reverse --remove "tcp:$TT_S3_PORT" > /dev/null 2>&1 || true; fi
   if [[ -n "${TT_PORT:-}" ]]; then $adb reverse --remove "tcp:$TT_PORT" > /dev/null 2>&1 || true; fi
+  if [[ -n "${TT_XP_COORD_PORT:-}" ]]; then $adb reverse --remove "tcp:$TT_XP_COORD_PORT" > /dev/null 2>&1 || true; fi
   if [[ "${TT_SERVER_RUNNING:-0}" != "1" ]]; then scripts/test-server.sh stop; fi
 }
 
