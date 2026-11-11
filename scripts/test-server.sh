@@ -8,6 +8,7 @@
 # 撤回、引用、@（C4）：默认 IM_MSG_ACTIONS_ENABLED=1（要 IM_QUARANTINE_KEY，下面随机生成），IM_MSG_ACTIONS_ENABLED=0 关掉。
 # 置顶、免打扰、删除会话（C5）：默认 IM_CONV_SETTINGS_ENABLED=1，IM_CONV_SETTINGS_ENABLED=0 关掉。
 # 敏感词和举报（C6）：默认 IM_MOD_ENABLED=1（要 IM_REPORT_KEY，下面随机生成 32 字节），IM_MOD_ENABLED=0 关掉；调用方带 moderation.words（词库管理接口，用例只用特征词）。
+# TT_EXTRA_CALLERS：额外调用方的 JSON 数组文件（FE-698 跨端：console-server 连这个服务端）。
 # 其他 IM_* 环境变量（例如 IM_ACCESS_TTL=30s）原样传给服务端。
 # TT_SERVER_STATE_DIR：服务端二进制、库、日志、env 放哪（默认 build/test-server），可以指到仓库外的临时目录。
 # 服务端源码默认在同级目录 ../tianting-server/server 或 ../im-mvp/server，也可以用 TIANTING_SERVER_DIR 指定。
@@ -63,8 +64,17 @@ caller_secret="$(rnd)"
 admin_key="$(rnd)"
 callers="$dir/callers.json"
 secret_b64="$(printf '%s' "$caller_secret" | base64 | tr -d '\n')"
+# TT_EXTRA_CALLERS：再加几个调用方（JSON 数组文件，原样拼在后面）。FE-698 跨端用 console-server 连这个服务端时，
+# 加它的 console、console-msgread（Ed25519 公钥，测试里一眼能看出是假的种子）。
+extra=""
+if [[ -n "${TT_EXTRA_CALLERS:-}" ]]; then
+  extra="$(tr -d '\n' < "$TT_EXTRA_CALLERS")"
+  extra="${extra#*\[}"
+  extra="${extra%\]*}"
+  [[ -n "${extra//[[:space:]]/}" ]] && extra=",$extra"
+fi
 cat > "$callers" <<JSON
-[{"id":"android-e2e","alg":"hmac-sha256","secret":"$secret_b64","scopes":["user.ban","group.write","msg.delete","mute.write","social.settings","social.friends","push.user","push.all","account.invite","moderation.words"],"pushTypes":["notice","promo"]}]
+[{"id":"android-e2e","alg":"hmac-sha256","secret":"$secret_b64","scopes":["user.ban","group.write","msg.delete","mute.write","social.settings","social.friends","push.user","push.all","account.invite","moderation.words"],"pushTypes":["notice","promo"]}$extra]
 JSON
 chmod 600 "$callers"
 
