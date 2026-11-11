@@ -78,6 +78,16 @@ scripts/run-tests.sh e2e com.tianting.app.C5E2eTest        # 多端同步、删�
 scripts/run-tests.sh kill C5KillE2e.deletedWhileKilled      # D2 离线时被删除，冷启动后本地库和缓存搜不到（AC-CVS-03-10）
 ```
 
+## 举报、内容拦截（C6）
+
+服务端 `GET /v1/config` 的 `features.moderation` 打开才有"举报"（老服务端没有这个字段按关闭）：消息菜单（排在"撤回"后面，按 SDK 的 `canReport`，页面不自己判断）、别人撤回的提示行后面的"举报"（可读名称"举报这条消息"）、资料卡右上角菜单、群信息页（当前成员）。举报单是底部弹层（`ui/pages/ReportSheet.kt`）：理由单选 6 项（默认不选）、补充说明（可选，按码点最多 200，粘贴超长截断并提示）、提示"所选内容将提交给平台审核"；提交中按钮禁用、弹层不能关；成功轻提示"已提交，感谢你的反馈"，单聊消息和资料卡举报用户成功后（对方不在黑名单）询问是否拉黑；4040、4030、4292 提示后关闭，其他失败留着可以再点，不自动重试。4510 和开关无关：发送被拦截时消息标记失败、输入框清空、提示"消息包含不当内容，无法发送"，失败标记不能点，菜单只有"复制""删除"（SDK `canRetry`）；群名、群公告、建群、好友申请附言、注册、改昵称被拦截时提示"内容包含不当信息，请修改后重试"，表单内容保留。
+
+`scripts/test-server.sh` 默认 `IM_MOD_ENABLED=1`（`IM_REPORT_KEY` 每次随机），调用方带 `moderation.words`，用例只用特征串。
+
+```bash
+scripts/run-tests.sh e2e com.tianting.app.C6E2eTest        # 举报、4510，对真实 im-server
+```
+
 ## 系统通知
 
 `scripts/test-server.sh` 打开 `IM_PUSH_ENABLED`。推送游标在 no-backup 目录的文件里（`AndroidPushCursorStore`），退出、被踢、库重建都不清；`ui.noticeSeen.{userId}` 只有一个数字，退出登录时删除，被踢时不删。列表只在内存，重启后为空，页面底部有说明（PRD-live F-PUSH-12 规则 6）。

@@ -17,7 +17,7 @@ adb="$ANDROID_HOME/platform-tools/adb"
 [[ -n "${ANDROID_SERIAL:-}" ]] && adb="$adb -s $ANDROID_SERIAL"
 pkg=com.tianting.app
 runner="$pkg.test/androidx.test.runner.AndroidJUnitRunner"
-UI_CLASSES="$pkg.NavLoginTest,$pkg.ConvListTest,$pkg.ChatTest,$pkg.SocialTest,$pkg.M4Test,$pkg.ModerationUiTest,$pkg.NoticesUiTest,$pkg.PolicyTest,$pkg.LayoutScaleTest,$pkg.AccountUiTest,$pkg.SessionUiTest,$pkg.FilesUiTest,$pkg.C4UiTest,$pkg.C5UiTest"
+UI_CLASSES="$pkg.NavLoginTest,$pkg.ConvListTest,$pkg.ChatTest,$pkg.SocialTest,$pkg.M4Test,$pkg.ModerationUiTest,$pkg.NoticesUiTest,$pkg.PolicyTest,$pkg.LayoutScaleTest,$pkg.AccountUiTest,$pkg.SessionUiTest,$pkg.FilesUiTest,$pkg.C4UiTest,$pkg.C5UiTest,$pkg.C6UiTest"
 
 # 先编译再用 adb 装：只碰 ANDROID_SERIAL 指定的设备（gradle 的 install 任务会枚举所有已连接设备）。多台设备时没有设置 ANDROID_SERIAL 就报错。
 install() {

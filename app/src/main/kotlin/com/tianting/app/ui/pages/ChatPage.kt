@@ -89,6 +89,7 @@ import com.tianting.sdk.GroupMemberInfo
 import com.tianting.sdk.GroupRole
 import com.tianting.sdk.MessageAction
 import com.tianting.sdk.QuoteRef
+import com.tianting.sdk.ReportTarget
 import com.tianting.sdk.QuoteState
 import com.tianting.sdk.QuoteView
 import com.tianting.sdk.quoteLabel
@@ -215,16 +216,19 @@ internal fun permissionTips(ms: List<Message>, tips: Map<String, Int>): Map<Stri
     return out
 }
 
-/** 消息菜单项（PRD-ui F-UI-09 规则 3，PRD-chat 第 13.3 节）。"举报"随 C6。 */
+/** 消息菜单项（PRD-ui F-UI-09 规则 3，PRD-chat 第 13.3 节："复制""引用""撤回""举报"按状态显示）。 */
 internal enum class MenuAction(val text: String, val tag: String) {
-    COPY("复制", "menu-copy"), QUOTE("引用", "menu-quote"), RECALL("撤回", "menu-recall"), RETRY("重发", "menu-retry"), DELETE("删除", "menu-delete"),
+    COPY("复制", "menu-copy"), QUOTE("引用", "menu-quote"), RECALL("撤回", "menu-recall"), REPORT("举报", "menu-report"),
+    RETRY("重发", "menu-retry"), DELETE("删除", "menu-delete"),
 }
 
 /**
  * 菜单项（F-UI-09 规则 3～5）：features.msgActions 关闭时只有"复制"（文本）和失败消息的"重发""删除"；打开时按 SDK 的 messageActions
  * （复制、引用、撤回：撤回按 ts 和校正后的服务端时间，撤回、删除的消息和提示行为空）。为空时长按没有反应。
+ * report：features.moderation 打开并且 SDK 的 canReport 为真（C6，frontend-chat 第 76、77、88 条，页面不自己判断），排在"撤回"后面，
+ * 和 msgActions 无关。canRetry：SDK 的 canRetry，4510 被拦截的（第 81 条）、原文件已不可用的失败消息没有"重发"，只有"复制""删除"。
  */
-internal fun menuItemsFor(m: Message, actionsOn: Boolean, sdkActions: () -> List<MessageAction>): List<MenuAction> {
+internal fun menuItemsFor(m: Message, actionsOn: Boolean, report: Boolean = false, canRetry: Boolean = true, sdkActions: () -> List<MessageAction>): List<MenuAction> {
     if (m.deleted || m.type == MsgType.TIP) return emptyList()
     val out = ArrayList<MenuAction>()
     if (actionsOn) {
@@ -240,8 +244,9 @@ internal fun menuItemsFor(m: Message, actionsOn: Boolean, sdkActions: () -> List
     } else if (m.type == MsgType.TEXT) {
         out.add(MenuAction.COPY)
     }
+    if (report) out.add(MenuAction.REPORT)
     if (m.status == MessageStatus.FAILED) {
-        out.add(MenuAction.RETRY)
+        if (canRetry) out.add(MenuAction.RETRY)
         out.add(MenuAction.DELETE)
     }
     return out
@@ -325,6 +330,9 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
     val scope = rememberCoroutineScope()
     // 撤回、引用、@（C4）：GET /v1/config 的 features.msgActions 打开才有（PRD-ui F-UI-09 规则 4）。
     val actionsOn = im.msgActions
+    // 举报（C6）：features.moderation 关闭时消息菜单、撤回提示行都没有"举报"（frontend-chat 第 76 条）；显示哪些按 SDK 的 canReport。
+    val reportOn = im.moderation
+    var reporting by remember { mutableStateOf<ReportRequest?>(null) }
     // 引用条（F-QUO-01，AC-QUO-01-5）：只记 msgId；草稿里也只有 msgId（问题 41）。
     var quoteId by remember { mutableStateOf(im.drafts[convId]?.quote) }
     var quoteFocus by remember { mutableIntStateOf(0) }
@@ -530,6 +538,12 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
         app.toast.show(if (viewing.recalled) MESSAGE_RECALLED else MESSAGE_DELETED)
     }
 
+    /** 举报单条消息（第一批只举报单条，frontend-chat 第 85 条）；单聊成功后询问拉黑，群消息不问（第 79 条）。 */
+    fun reportMessage(m: Message) {
+        val id = m.msgId ?: return
+        reporting = ReportRequest(ReportTarget.Messages(convId, listOf(id)), askBlock = if (isGroup) null else m.from)
+    }
+
     fun act(item: MenuAction, m: Message) {
         menu = null
         when (item) {
@@ -545,11 +559,13 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
                 val id = m.msgId ?: return
                 im.launchCmd({ e -> app.toast.show(recallErrorText(e)) }) { im.client.recall(convId, id) }
             }
+            MenuAction.REPORT -> reportMessage(m)
         }
     }
 
     val liveMessage = { id: String? -> id?.let { i -> messages.firstOrNull { it.clientMsgId == i && !it.deleted } } }
-    val retry = liveMessage(retryId)
+    // 4510 被拦截的不能重发（frontend-chat 第 81 条）：确认框也不出
+    val retry = liveMessage(retryId)?.takeIf { im.client.canRetry(it) }
     val userState = if (isGroup) RouteState(source = ApplySource.GROUP, sourceRef = to) else RouteState(source = ApplySource.CONV)
 
     Page {
@@ -593,12 +609,21 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
                             val recall = if (r.m.recalled) im.client.recallNotice(r.m) else null
                             when {
                                 // 撤回按 F-RCL-02 规则 1a 的表（F-UI-42 规则 4）；撤回、删除的提示行没有菜单（F-RCL-03 规则 6）
-                                r.m.deleted && recall != null -> CenterTip(rememberRecallText(recall), "msg-recalled")
+                                // 别人撤回的（canReport）后面跟"举报"（F-MOD-03 规则 2a，AC-MOD-03-11）
+                                r.m.deleted && recall != null -> RecallTip(
+                                    rememberRecallText(recall),
+                                    r.m.clientMsgId,
+                                    onReport = if (reportOn && im.client.canReport(r.m)) ({ reportMessage(r.m) }) else null,
+                                )
                                 r.m.deleted -> CenterTip(MESSAGE_DELETED, "msg-deleted")
                                 r.m.type == MsgType.TIP -> TipRow(r.m, convId)
                                 else -> {
                                     // 长按时重新算（撤回按当时的服务端时间，AC-RCL-01-8）；组合时算的只决定长按有没有反应。
-                                    val itemsNow = { menuItemsFor(r.m, actionsOn) { im.client.messageActions(r.m, conv?.myRole) } }
+                                    val itemsNow = {
+                                        menuItemsFor(r.m, actionsOn, report = reportOn && im.client.canReport(r.m), canRetry = im.client.canRetry(r.m)) {
+                                            im.client.messageActions(r.m, conv?.myRole)
+                                        }
+                                    }
                                     val items = itemsNow()
                                     val open = menu?.takeIf { it.first == r.m.clientMsgId }
                                     Bubble(
@@ -611,7 +636,7 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
                                         hasMenu = items.isNotEmpty(),
                                         mentioned = actionsOn && mentionsMe(r.m, im.self),
                                         menuItems = open?.second,
-                                        onRetry = { retryId = r.m.clientMsgId },
+                                        onRetry = if (im.client.canRetry(r.m)) ({ retryId = r.m.clientMsgId }) else null,
                                         onMenu = { itemsNow().takeIf { it.isNotEmpty() }?.let { menu = r.m.clientMsgId to it } },
                                         onMenuClose = { menu = null },
                                         onPick = { act(it, r.m) },
@@ -710,6 +735,7 @@ private fun Chat(convId: String, parsed: ParsedConvId) {
             },
         )
     }
+    reporting?.let { ReportSheet(it) { reporting = null } }
 }
 
 private class Loaded<T>(val value: T)
@@ -743,6 +769,36 @@ private fun CenterTip(text: String, tag: String, modifier: Modifier = Modifier, 
             color = Tt.colors.textTertiary,
             align = TextAlign.Center,
         )
+    }
+}
+
+/**
+ * 撤回提示行（F-RCL-02 规则 1a 的表，F-RCL-03 规则 6）：没有菜单。onReport 有值时（别人撤回的，C6）后面跟一个"举报"
+ * （F-MOD-03 规则 2a，AC-MOD-03-11），可读名称"举报这条消息"，是按钮；msg-recalled 仍然只有撤回文案（同 H5）。
+ */
+@Composable
+private fun RecallTip(text: String, clientMsgId: String, onReport: (() -> Unit)?) {
+    if (onReport == null) {
+        CenterTip(text, "msg-recalled", Modifier.semantics { dataClientMsgId = clientMsgId })
+        return
+    }
+    Row(Modifier.fillMaxWidth().tag("recall-row").semantics { dataClientMsgId = clientMsgId }, horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+        T(
+            text,
+            Modifier.tag("msg-recalled").clip(RoundedCornerShape(TtDimen.radiusSm.dp)).background(Tt.colors.surface).padding(horizontal = 8.dp, vertical = 2.dp),
+            style = Tt.type.caption,
+            color = Tt.colors.textTertiary,
+            align = TextAlign.Center,
+        )
+        Box(
+            Modifier.tag("recall-report").heightIn(min = TtDimen.sizeTouchMin.dp).widthIn(min = TtDimen.sizeTouchMin.dp) // 点击区域不小于 44 dp（PRD-ui），文字不变
+                .clickable(onClickLabel = "举报", role = androidx.compose.ui.semantics.Role.Button, onClick = onReport)
+                .semantics { contentDescription = "举报这条消息" }
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            T("举报", style = Tt.type.caption, color = Tt.colors.brand)
+        }
     }
 }
 
@@ -802,7 +858,7 @@ private fun Bubble(
     hasMenu: Boolean,
     mentioned: Boolean,
     menuItems: List<MenuAction>?,
-    onRetry: () -> Unit,
+    onRetry: (() -> Unit)?,
     onMenu: () -> Unit,
     onMenuClose: () -> Unit,
     onPick: (MenuAction) -> Unit,
@@ -839,9 +895,14 @@ private fun Bubble(
             if (showName) T(senderName, Modifier.tag("msg-name").padding(bottom = 2.dp), style = Tt.type.caption, color = Tt.colors.textSecondary, maxLines = 1)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (mine && m.status != MessageStatus.SENT) {
-                    if (failed) {
+                    if (failed && onRetry != null) {
                         IconButton(onRetry, Modifier.tag("failed-icon").size(44.dp)) {
                             Icon(TtIcons.failed, "发送失败，点击重发", Modifier.size(20.dp), tint = Tt.colors.danger)
+                        }
+                    } else if (failed) {
+                        // 不能重发的（4510 被拦截、原文件已不可用，SDK canRetry 为 false）：只有标记，点了没有反应（frontend-chat 第 81 条）
+                        Box(Modifier.tag("failed-icon").size(44.dp).semantics { dataMark = "no-retry" }, contentAlignment = Alignment.Center) {
+                            Icon(TtIcons.failed, "发送失败", Modifier.size(20.dp), tint = Tt.colors.danger)
                         }
                     } else {
                         Spinner(16.dp, Tt.colors.textTertiary, Modifier.tag("sending-icon").padding(end = 4.dp))

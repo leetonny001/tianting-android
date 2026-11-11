@@ -436,8 +436,10 @@ fun Confirm(text: String, ok: String, tag: String, danger: Boolean = false, onCa
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TtSheet(tag: String, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+fun TtSheet(tag: String, onDismiss: () -> Unit, canDismiss: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+    // canDismiss 为 false 时（例如提交中）下滑、点遮罩、返回键都不关（举报单，FE-694）。
+    val dismissible = androidx.compose.runtime.rememberUpdatedState(canDismiss)
+    val state = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { it != androidx.compose.material3.SheetValue.Hidden || dismissible.value })
     ModalBottomSheet(onDismiss, sheetState = state, containerColor = Tt.colors.surface, contentColor = Tt.colors.textPrimary) {
         Column(
             Modifier.tag(tag).fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 24.dp),

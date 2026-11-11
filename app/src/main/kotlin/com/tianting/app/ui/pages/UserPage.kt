@@ -29,7 +29,8 @@ import com.tianting.app.ui.theme.*
 import com.tianting.sdk.*
 import com.tianting.sdk.Friend
 
-private const val BLOCK_TEXT = "加入黑名单后，你将不再收到对方的私聊消息和好友申请；在共同的群聊里仍能看到对方的发言"
+/** 拉黑确认框的说明（F-UI-14）；举报成功后询问拉黑也用它（frontend-chat 第 79 条）。 */
+internal const val BLOCK_TEXT = "加入黑名单后，你将不再收到对方的私聊消息和好友申请；在共同的群聊里仍能看到对方的发言"
 
 private enum class UserConfirm { BLOCK, DELETE }
 
@@ -56,6 +57,7 @@ fun UserPage(userId: String, state: RouteState) {
     var menu by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<UserConfirm?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var reporting by remember { mutableStateOf(false) }
     val canChat = when (relation) {
         Relation.FRIEND -> true
         Relation.BLOCKED -> open || isFriend
@@ -114,6 +116,13 @@ fun UserPage(userId: String, state: RouteState) {
                                     confirm = UserConfirm.DELETE
                                 }, Modifier.tag("menu-delete-friend"))
                             }
+                            // 举报用户（F-MOD-03 规则 8）：features.moderation 打开才有，对自己不显示（菜单本来就只对别人有，frontend-chat 第 76、77 条）
+                            if (im.moderation) {
+                                DropdownMenuItem({ T("举报") }, {
+                                    menu = false
+                                    reporting = true
+                                }, Modifier.tag("menu-report"))
+                            }
                         }
                     }
                 }
@@ -149,6 +158,8 @@ fun UserPage(userId: String, state: RouteState) {
             }
         }
     }
+    // 举报用户成功后询问拉黑；已在黑名单的不问（frontend-chat 第 79 条，ReportSheet 按黑名单再查）。
+    if (reporting) ReportSheet(ReportRequest(ReportTarget.User(userId), askBlock = userId)) { reporting = false }
     when (confirm) {
         UserConfirm.BLOCK -> Confirm(BLOCK_TEXT, "确定", "block-dialog", onCancel = { confirm = null }, onOk = {
             confirm = null

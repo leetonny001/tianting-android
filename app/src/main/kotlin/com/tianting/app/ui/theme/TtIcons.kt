@@ -57,6 +57,10 @@ internal object TtIcons {
     val close by lazy { lucide("x", "M18 6 6 18", "m6 6 12 12") }
     val download by lazy { lucide("download", "M12 15V3", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m7 10 5 5 5-5") }
     val smile by lazy { lucide("smile", circle(12f, 12f, 10f), "M8 14s1.5 2 4 2 4-2 4-2", line(9f, 9f, 9.01f, 9f), line(15f, 9f, 15.01f, 9f)) }
+    // 举报（PRD-chat F-MOD-03 规则 8，frontend-chat 第 80 条：Lucide flag，PRD-ui 6.6 节清单随 BE-497 第 4 条；同 H5）
+    val report by lazy {
+        lucide("flag", "M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528")
+    }
     val newFriend by lazy { lucide("user-round-plus", "M2 21a8 8 0 0 1 13.292-6", circle(10f, 8f, 5f), "M19 16v6", "M22 19h-6") }
     // 会话列表的免打扰（PRD-chat F-CVS-02 规则 5，C5；PRD-ui 6.6 节清单随 BE-488，和 H5 同一个图标）
     val notifyOff by lazy {

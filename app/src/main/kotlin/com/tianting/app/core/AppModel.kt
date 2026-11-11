@@ -288,6 +288,7 @@ class AppModel(context: Context, val deps: AppDeps) {
         session.filesFeature = { cachedConfig?.features?.files == true }
         session.msgActionsFeature = { cachedConfig?.features?.msgActions == true }
         session.convSettingsFeature = { cachedConfig?.features?.convSettings == true }
+        session.moderationFeature = { cachedConfig?.features?.moderation == true }
         session.start(deps.bindNetwork) { c -> if (isAccount) c.connect(account.tokenProvider) else c.connect(s.accessToken) }
         im = session
     }

@@ -374,6 +374,8 @@ class FakeAccountHttp(var user: String = "alice") : HttpTransport {
     var msgActions: Boolean? = null
     /** features.convSettings（C5 置顶、免打扰、删除会话）；null 时不带这个字段（老服务端按关闭）。 */
     var convSettings: Boolean? = null
+    /** features.moderation（C6 举报入口）；null 时不带这个字段（老服务端按关闭，frontend-chat 第 76 条）。 */
+    var moderation: Boolean? = null
     var privacy: JsonObject? = null
     var eventsBody: JsonObject = obj("events" to emptyList<JsonObject>(), "otherSessions" to obj("count" to 0))
     private var nextGen = 2L
@@ -409,7 +411,7 @@ class FakeAccountHttp(var user: String = "alice") : HttpTransport {
 
     private fun configBody(): JsonObject {
         val m = linkedMapOf<String, Any?>(
-            "registerMode" to registerMode, "demoLogin" to demoLogin, "features" to js(linkedMapOf<String, Any?>("files" to files, "msgActions" to msgActions, "convSettings" to convSettings).filterValues { it != null }),
+            "registerMode" to registerMode, "demoLogin" to demoLogin, "features" to js(linkedMapOf<String, Any?>("files" to files, "msgActions" to msgActions, "convSettings" to convSettings, "moderation" to moderation).filterValues { it != null }),
             "limits" to obj("usernameMinLen" to 4, "usernameMaxLen" to 32, "passwordMinLen" to 8, "passwordMaxLen" to 128, "nicknameMaxLen" to 32, "deviceNameMaxLen" to 64),
         )
         privacy?.let { m["privacyNotice"] = it }

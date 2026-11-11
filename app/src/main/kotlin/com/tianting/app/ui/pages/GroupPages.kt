@@ -207,6 +207,7 @@ private fun GroupSettings(convId: String, onGone: () -> Unit) {
     var renaming by remember { mutableStateOf<String?>(null) }
     var confirm by remember { mutableStateOf<GroupConfirm?>(null) }
     var inFlight by remember { mutableStateOf(false) }
+    var reporting by remember { mutableStateOf(false) }
     LaunchedEffect(state.gone) { if (state.gone) onGone() }
     val info = state.info
     if (info == null) {
@@ -222,13 +223,14 @@ private fun GroupSettings(convId: String, onGone: () -> Unit) {
     val canInvite = !info.managed || info.owner.isNotEmpty()
     val rowState = RouteState(source = ApplySource.GROUP, sourceRef = groupId)
 
-    fun act(cmd: String, op: suspend () -> Unit, done: suspend () -> Unit) {
+    fun act(cmd: String, op: suspend () -> Unit, done: suspend () -> Unit, onFailed: (Int) -> Unit = {}) {
         if (inFlight) return
         inFlight = true
         im.launchCmd({ e ->
             inFlight = false
             val code = errCode(e)
             app.toast.show(messageFor(code, cmd))
+            onFailed(code)
             if (code == 4030) im.launchCmd { state.refresh() }
         }) {
             op()
@@ -277,6 +279,11 @@ private fun GroupSettings(convId: String, onGone: () -> Unit) {
                     TtRow(tag = "manage-transfer", onClick = { nav.go(membersPath(convId), RouteState(mode = MemberMode.TRANSFER)) }) { T("转让群主") }
                 }
             }
+            // 举报群（F-MOD-03 规则 8）：群设置只对当前成员显示，不在群里的只读页没有（frontend-chat 第 76、77 条）。
+            if (im.moderation) {
+                Spacer(Modifier.height(12.dp))
+                TtRow(tag = "group-report", onClick = { reporting = true }) { T("举报") }
+            }
             Spacer(Modifier.height(12.dp))
             TtRow(tag = "group-leave", onClick = { confirm = GroupConfirm.LEAVE }) { T("退出群聊", Modifier.fillMaxWidth(), color = Tt.colors.danger, align = TextAlign.Center) }
             if (selfOwned) TtRow(tag = "group-dissolve", onClick = { confirm = GroupConfirm.DISSOLVE }) { T("解散群聊", Modifier.fillMaxWidth(), color = Tt.colors.danger, align = TextAlign.Center) }
@@ -290,13 +297,21 @@ private fun GroupSettings(convId: String, onGone: () -> Unit) {
             T("修改群聊名称", style = Tt.type.title)
             TtInput(draft, { renaming = it }, "rename-input")
             if (tooLong) FieldError("最多 $MAX_GROUP_NAME 个字")
-            PrimaryButton("保存", Modifier.fillMaxWidth().tag("rename-save"), enabled = !tooLong && len > 0) {
+            PrimaryButton("保存", Modifier.fillMaxWidth().tag("rename-save"), enabled = !tooLong && len > 0 && !inFlight) {
                 val name = trimText(draft)
-                renaming = null
-                if (name != info.name) act("groupUpdate", { im.client.updateGroup(groupId, name = name) }, { state.refresh() })
+                if (name == info.name) {
+                    renaming = null
+                } else {
+                    // 群名被拦截（4510，P-48 ⑥）：提示"内容包含不当信息，请修改后重试"，弹层和输入的内容保留；其他失败照旧关掉。
+                    act("groupUpdate", { im.client.updateGroup(groupId, name = name) }, onFailed = { code -> if (code != 4510) renaming = null }, done = {
+                        renaming = null
+                        state.refresh()
+                    })
+                }
             }
         }
     }
+    if (reporting) ReportSheet(ReportRequest(ReportTarget.Group(groupId))) { reporting = false }
     when (confirm) {
         GroupConfirm.LEAVE -> Confirm(
             if (selfOwned) "你是群主，退出后群主将自动转让给其他成员" else "退出后，将不再接收此群聊消息",
@@ -671,7 +686,8 @@ fun GroupNewPage() {
         inFlight = true
         im.launchCmd({ e ->
             inFlight = false
-            naming = false
+            // 群名被拦截（4510，P-48 ⑥）：弹层和群名保留，可以改了再建；其他失败照旧关掉弹层
+            if (errCode(e) != 4510) naming = false
             val userId = (e as? IMError)?.userId
             app.toast.show(memberErrorText(errCode(e), userId, "groupCreate", im::nameOf, im.self))
             if (userId != null) errors = setOf(userId)

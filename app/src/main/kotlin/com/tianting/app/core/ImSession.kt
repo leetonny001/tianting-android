@@ -124,6 +124,14 @@ class ImSession(
 
     val convSettings: Boolean get() = convSettingsFeature()
 
+    /**
+     * 服务端配置的 features.moderation（C6，IM_MOD_ENABLED）：关闭时消息菜单、撤回提示行、资料卡、群信息页都没有"举报"；
+     * 老服务端没有这个字段按关闭。4510 的提示和它无关（frontend-chat 第 76 条）。
+     */
+    var moderationFeature: () -> Boolean = { false }
+
+    val moderation: Boolean get() = moderationFeature()
+
     /** 私聊权限提示条的来源（F-UI-31）：clientMsgId → 错误码。只在内存。 */
     val sendTips = mutableStateMapOf<String, Int>()
 
