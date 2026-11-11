@@ -365,6 +365,30 @@ class C6UiTest : UiTest() {
         assertNeverWithin(800, "群消息问拉黑") { rule.hasTag("report-block-dialog") }
     }
 
+    @Test fun issue_92_report_only_after_read_and_row_updates_when_read() { // 第 92 条：seq ≤ readSeq 才有举报（sdk-kotlin 128e789 的 canReport），读到后页面跟着出现
+        group("member", textMsg(G1, 1, "bob", "看过的"))
+        open("tianting://chat/group%3Ag1")
+        rule.waitText("看过的")
+        assertTrue("menu-report" in menuOf("看过的"))
+        closeMenu()
+        // App 在后台（不可见）：新消息不算读到
+        inst.runOnMainSync { model.setForeground(false) }
+        val unread = textMsg(G1, 2, "bob", "还没读的")
+        server.pushMsg(unread)
+        rule.waitText("还没读的")
+        waitFor("未读") { model.im!!.client.conversations.value.first { it.convId == G1 }.readSeq == 1L }
+        assertFalse("menu-report" in menuOf("还没读的"), "没读到的没有举报")
+        closeMenu()
+        // 在后台时被撤回：撤回提示行没有举报
+        server.pushEvent("msgDeleted", "convId" to G1, "msgIds" to listOf(idOf(unread)), "seqs" to listOf(2), "recalled" to obj("by" to "bob", "at" to System.currentTimeMillis()))
+        rule.waitUntil(5000) { recalledShown(cidOf(unread)) }
+        assertNeverWithin(800, "没读到的撤回行有举报") { hasRecallReport(cidOf(unread)) }
+        // 回到前台、读到了：撤回提示行跟着出现举报
+        inst.runOnMainSync { model.setForeground(true) }
+        waitFor("已读") { model.im!!.client.conversations.value.first { it.convId == G1 }.readSeq == 2L }
+        rule.waitUntil(5000) { hasRecallReport(cidOf(unread)) }
+    }
+
     // ---- 资料卡、群信息页（F-MOD-03 规则 8，第 77、79 条） ----
 
     @Test fun profile_report_user_asks_block_unless_already_blocked() { // 第 77 条（资料卡对自己不显示）、第 79 条
